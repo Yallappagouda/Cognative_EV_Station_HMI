@@ -1,0 +1,26 @@
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700&family=Inter:wght@300;400;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-volt-dark text-white font-sans overflow-hidden selection:bg-volt-cyan selection:text-black;
+  }
+}
+
+.bg-hexagon {
+  background-color: #050b14;
+  background-image: 
+    linear-gradient(to bottom, rgba(5, 11, 20, 0.8), rgba(5, 11, 20, 0.95)),
+    url("data:image/svg+xml,%3Csvg width='40' height='70' viewBox='0 0 40 70' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%2322d3ee' fill-opacity='0.05'%3E%3Cpath d='M0 0h40v70H0z'/%3E%3Cpath d='M20 35L0 23.5V0h40v23.5L20 35zM20 35L0 46.5V70h40V46.5L20 35z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { @apply bg-volt-dark; }
+::-webkit-scrollbar-thumb { @apply bg-volt-navy rounded-full; }
+
+.text-glow { text-shadow: 0 0 20px rgba(34, 211, 238, 0.6); }
+.box-glow { box-shadow: 0 0 30px rgba(34, 211, 238, 0.1); }
