@@ -1,6 +1,74 @@
 # VoltCharge HMI - EV Charging Station Interface
 
-A premium dark-themed EV charging station Human-Machine Interface (HMI) built with React, Vite, and Tailwind CSS. Features real-time charging simulation, voice control, haptic feedback, safety systems, and comprehensive error handling.
+A premium dark-themed EV charging station Human-Machine Interface (HMI) built with React, Vite, and Tailwind CSS. Features real-time charging simulation, **adaptive multimodal UI**, continuous voice control, haptic feedback, safety systems, and comprehensive error handling.
+
+## ✨ NEW: Adaptive UI Modes & Continuous Voice Recognition
+
+### 🎯 Adaptive Mode System
+The system **automatically detects user type** and adapts the UI layout, font sizes, and interaction density:
+
+#### **GUIDED Mode** (First-time Users)
+- Large font sizes (18–22px)
+- Step-by-step instructions visible
+- One action per screen
+- Voice guidance enabled by default
+- Simple, minimal wording
+- Speaker icon visible in header
+
+#### **ELDERLY Mode** (Slow Interaction - >5s delay on Welcome)
+- Extra-large fonts (22–26px)
+- High-contrast colors (dark background + bright text)
+- Very large buttons and spacing
+- Minimal text, clearer labels
+- Slower animations
+- Automatic voice guidance enabled
+
+#### **EXPERT Mode** (Fast Interaction - <5s delay on Welcome)
+- Medium fonts (16px)
+- Compact layout density
+- More information visible on screen
+- Voice off by default (tap mic to enable)
+- Advanced stats shown (SOC%, kW, Voltage, Estimated time)
+
+### 🎤 Continuous Voice Recognition (Web Speech API)
+- **Auto-listening on every screen** - Voice recognition starts automatically
+- **Auto-restart on drop** - If connection drops, automatically restarts listening
+- **No button press needed** - Just speak naturally
+- **Supported Commands**:
+  - "Start charging" / "Stop charging"
+  - "Tap card" (NFC auth)
+  - "Enter mobile" (focus mobile input)
+  - "Go back" (navigate back)
+  - "Confirm" (confirm actions)
+  - "Clear" (clear mobile input)
+
+### 📱 Voice-Based Mobile Number Entry
+During **Authentication Screen**:
+1. User taps "🎤" button next to mobile input
+2. User speaks: **"Nine one two three four five six seven eight nine"**
+3. System converts spoken digits → `9123456789`
+4. Input field auto-populates
+5. Manual typing still works alongside voice
+
+### 🔐 Voice-Based OTP Entry
+After mobile number verified:
+1. System sends OTP to user's mobile
+2. User can **speak OTP digits**: "Four six seven eight"
+3. System converts → `4678`
+4. OTP input auto-populates
+5. Manual entry available as fallback
+
+### 🌍 Mode Detection Logic
+```
+Welcome Screen Load
+  ↓ Start timer
+  User clicks "Start Charging"
+  ↓ Check interaction time
+  
+  if (first-time user) → GUIDED mode
+  else if (response > 5000ms) → ELDERLY mode  
+  else → EXPERT mode
+```
 
 ## Features Overview
 
