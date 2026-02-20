@@ -9,28 +9,42 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recha
 import { triggerHaptic, speak, beep } from './utils';
 import useVoiceCommands from './hooks/useVoiceCommands';
 import MicButton from './components/MicButton';
+import { useCognitive } from './hooks/useCognitiveEngine';
 
 // reference to avoid unused-import linter in some environments
 const _motionRef = motion;
 
 // --- UI COMPONENTS ---
 
-const Card = ({ children, className, onClick, active }) => (
-  <div 
-    onClick={onClick}
-    className={`
-      relative p-6 rounded-2xl border transition-all duration-300 backdrop-blur-sm
-      ${active 
-        ? 'bg-volt-navy/80 border-volt-cyan shadow-[0_0_20px_rgba(34,211,238,0.2)]' 
-        : 'bg-volt-navy/40 border-white/5 hover:bg-volt-navy/60 hover:border-white/10'}
-      ${className}
-    `}
-  >
-    {children}
-  </div>
-);
+const Card = ({ children, className, onClick, active }) => {
+  const { registerInteraction } = useCognitive();
+
+  const handleClick = (event) => {
+    if (onClick) {
+      onClick(event);
+    }
+    registerInteraction();
+  };
+
+  return (
+    <div 
+      onClick={handleClick}
+      className={`
+        relative p-6 rounded-2xl border transition-all duration-300 backdrop-blur-sm
+        ${active 
+          ? 'bg-volt-navy/80 border-volt-cyan shadow-[0_0_20px_rgba(34,211,238,0.2)]' 
+          : 'bg-volt-navy/40 border-white/5 hover:bg-volt-navy/60 hover:border-white/10'}
+        ${className}
+      `}
+    >
+      {children}
+    </div>
+  );
+};
 
 const Button = ({ children, onClick, variant = 'primary', className, icon: Icon, disabled = false }) => {
+  const { registerInteraction } = useCognitive();
+
   const variants = {
     primary: "bg-gradient-to-r from-volt-cyan to-volt-green text-black font-bold shadow-[0_0_20px_rgba(34,211,238,0.4)]",
     danger: "bg-gradient-to-r from-red-800 to-red-600 text-white border border-red-500 shadow-[0_0_20px_rgba(239,68,68,0.4)]",
@@ -42,7 +56,14 @@ const Button = ({ children, onClick, variant = 'primary', className, icon: Icon,
     <motion.button
       whileTap={!disabled ? { scale: 0.95 } : {}}
       whileHover={!disabled ? { scale: 1.02 } : {}}
-      onClick={!disabled ? onClick : undefined}
+      onClick={
+        !disabled
+          ? (event) => {
+              registerInteraction();
+              if (onClick) onClick(event);
+            }
+          : undefined
+      }
       disabled={disabled}
       className={`w-full py-4 px-6 rounded-xl flex items-center justify-center gap-2 uppercase tracking-wider disabled:opacity-50 disabled:cursor-not-allowed ${variants[variant]} ${className}`}
     >
@@ -55,13 +76,13 @@ const Button = ({ children, onClick, variant = 'primary', className, icon: Icon,
 // --- SCREENS ---
 
 const Header = ({ voice }) => (
-  <div className="flex justify-between items-center p-6 absolute top-0 w-full z-10">
+  <div className="absolute top-0 z-10 flex items-center justify-between w-full p-6">
     <div className="flex items-center gap-2">
       <Zap className="text-volt-cyan fill-volt-cyan" />
-      <span className="font-sans font-bold text-xl tracking-widest">VOLTCHARGE</span>
+      <span className="font-sans text-xl font-bold tracking-widest">VOLTCHARGE</span>
     </div>
     <div className="flex items-center gap-4">
-      <div className="flex gap-4 text-xs font-mono text-slate-400 bg-volt-navy/80 px-4 py-2 rounded-full border border-white/5">
+      <div className="flex gap-4 px-4 py-2 font-mono text-xs border rounded-full text-slate-400 bg-volt-navy/80 border-white/5">
         <span className="flex items-center gap-2"><Wifi size={12} className="text-volt-green" /> 5G Connected</span>
         <span>|</span>
         <span>{new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
@@ -76,11 +97,13 @@ const Header = ({ voice }) => (
 // 1. HOME - WELCOME SCREEN WITH FIRST-TIME CHECK
 const HomeScreen = ({ onNext, decideUserMode, userMode }) => {
   const startRef = useRef(null);
-
-  useEffect(() => { 
-    startRef.current = Date.now();
-    speak("Welcome to EV Charging Station. Is this your first time charging an EV?"); 
-  }, []);
+  const { incrementHelp, registerInteraction } = useCognitive();
+  const [voiceError, setVoiceError] = useState('');
+  const recognitionRef = useRef(null);
+  const hasTriggeredRef = useRef(false);
+  const isMountedRef = useRef(true);
+  const isListeningRef = useRef(false);
+  const [hasVoiceSupport, setHasVoiceSupport] = useState(false);
 
   const handleYes = () => {
     // First time user → GUIDED mode
@@ -97,14 +120,122 @@ const HomeScreen = ({ onNext, decideUserMode, userMode }) => {
     onNext();
   };
 
+  useEffect(() => { 
+    startRef.current = Date.now();
+    speak("Welcome to EV Charging Station. Is this your first time charging an EV?"); 
+
+    // FIRST SCREEN VOICE RECOGNITION (safe, single instance)
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    if (!window.SpeechRecognition && !window.webkitSpeechRecognition) {
+      return;
+    }
+
+    const SpeechRecognition =
+      window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    setHasVoiceSupport(true);
+
+    if (!recognitionRef.current) {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = false;
+      recognition.lang = 'en-US';
+
+      recognitionRef.current = recognition;
+
+      recognition.onresult = (event) => {
+        if (hasTriggeredRef.current) return;
+        if (!event.results || event.results.length === 0) {
+          setVoiceError('Please say Yes or No');
+          return;
+        }
+
+        const lastResult = event.results[event.results.length - 1];
+        if (!lastResult || !lastResult[0]) {
+          setVoiceError('Please say Yes or No');
+          return;
+        }
+
+        const transcript = lastResult[0].transcript.toLowerCase().trim();
+
+        if (transcript.includes('yes')) {
+          hasTriggeredRef.current = true;
+          setVoiceError('');
+          try {
+            recognition.stop();
+          } catch (e) {
+            // ignore stop errors
+          }
+          handleYes();
+          return;
+        }
+
+        if (transcript.includes('no')) {
+          hasTriggeredRef.current = true;
+          setVoiceError('');
+          try {
+            recognition.stop();
+          } catch (e) {
+            // ignore stop errors
+          }
+          handleNo();
+          return;
+        }
+
+        setVoiceError('Please say Yes or No');
+      };
+
+      recognition.onend = () => {
+        if (!hasTriggeredRef.current && isListeningRef.current && isMountedRef.current) {
+          try {
+            recognition.start();
+          } catch (e) {
+            // eslint-disable-next-line no-console
+            console.log('Restart blocked:', e && e.message);
+          }
+        }
+      };
+
+      recognition.onerror = (event) => {
+        // eslint-disable-next-line no-console
+        console.log('First screen voice error:', event && event.error);
+      };
+
+      try {
+        recognition.start();
+        isListeningRef.current = true;
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.log('Start error:', e && e.message);
+        isListeningRef.current = false;
+      }
+    }
+
+    return () => {
+      isMountedRef.current = false;
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch {
+          // ignore stop errors
+        }
+        recognitionRef.current = null;
+        isListeningRef.current = false;
+      }
+    };
+  }, []);
+
   const modeClasses = userMode === 'ELDERLY' ? 'text-2xl high-contrast' : (userMode === 'GUIDED' ? 'text-xl' : (userMode === 'EXPERT' ? 'text-sm' : ''));
-  
+
   return (
     <div className={`flex flex-col h-full justify-between px-4 py-8 relative ${modeClasses}`}>
       {/* Header Section */}
-      <div className="text-center mb-8">
+      <div className="mb-8 text-center">
         <div className="flex justify-center mb-6">
-          <div className="w-16 h-16 rounded-full bg-volt-cyan/20 border border-volt-cyan flex items-center justify-center">
+          <div className="flex items-center justify-center w-16 h-16 border rounded-full bg-volt-cyan/20 border-volt-cyan">
             <Zap size={32} className="text-volt-cyan" />
           </div>
         </div>
@@ -118,14 +249,19 @@ const HomeScreen = ({ onNext, decideUserMode, userMode }) => {
       </div>
 
       {/* Main Question Section */}
-      <div className="flex-1 flex items-center justify-center mb-12">
+      <div className="flex items-center justify-center flex-1 mb-12">
         <motion.div 
           initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
-          className="text-center max-w-2xl"
+          className="max-w-2xl text-center"
         >
           <h2 className={`font-bold font-sans mb-12 ${userMode === 'ELDERLY' ? 'text-3xl' : (userMode === 'GUIDED' ? 'text-2xl' : 'text-xl')}`}>
             Is this your first time charging an EV?
           </h2>
+          {voiceError && (
+            <p className="mt-2 text-sm text-amber-400">
+              {voiceError}
+            </p>
+          )}
           
           <div className={`grid grid-cols-2 gap-6 ${userMode === 'ELDERLY' ? 'gap-8' : ''}`}>
             <motion.button
@@ -147,10 +283,24 @@ const HomeScreen = ({ onNext, decideUserMode, userMode }) => {
       </div>
 
       {/* Footer Section */}
-      <div className="flex items-center justify-center gap-8 text-slate-500 text-sm">
-        <button className="hover:text-slate-300">ℹ️ Help</button>
+      <div className="flex items-center justify-center gap-8 text-sm text-slate-500">
+        <button
+          className="hover:text-slate-300"
+          onClick={() => {
+            incrementHelp();
+            registerInteraction();
+          }}
+        >
+          ℹ️ Help
+        </button>
         <div className="w-px h-5 bg-slate-700"></div>
-        <select className="bg-transparent border border-slate-600 rounded px-3 py-1 text-slate-300">
+        {hasVoiceSupport && (
+          <div className="flex items-center gap-1 text-xs text-slate-500">
+            <span>🎤</span>
+            <span>Voice: Say "Yes" or "No"</span>
+          </div>
+        )}
+        <select className="px-3 py-1 bg-transparent border rounded border-slate-600 text-slate-300">
           <option>English</option>
           <option>Español</option>
           <option>Français</option>
@@ -184,35 +334,35 @@ const ChargingModeScreen = ({ onFastCharge, onNormalCharge, userMode }) => {
   const modeClasses = userMode === 'ELDERLY' ? 'text-2xl high-contrast' : (userMode === 'GUIDED' ? 'text-xl' : (userMode === 'EXPERT' ? 'text-sm compact-layout' : ''));
   return (
     <div className={`flex flex-col h-full justify-center px-4 max-w-5xl mx-auto w-full ${modeClasses}`}>
-      <div className="text-center mb-16">
-        <h2 className="text-4xl font-bold font-sans mb-2 text-glow">Select Charging Mode</h2>
+      <div className="mb-16 text-center">s
+        <h2 className="mb-2 font-sans text-4xl font-bold text-glow">Select Charging Mode</h2>
         <p className="text-slate-400">Choose your preferred charging speed</p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-stretch">
+      <div className="grid items-stretch grid-cols-1 gap-8 md:grid-cols-2">
         {/* FAST CHARGE CARD */}
         <motion.div
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
           onClick={handleFastCharge}
           className="relative p-8 rounded-2xl border-2 cursor-pointer transition-all duration-300 backdrop-blur-sm bg-volt-navy/40 hover:bg-volt-navy/60 border-cyan-400 shadow-[0_0_30px_rgba(34,211,238,0.3)] hover:shadow-[0_0_50px_rgba(34,211,238,0.5)]">
-          <div className="absolute top-4 right-4 w-8 h-8 rounded-full border-2 border-cyan-400 bg-cyan-400/10"></div>
+          <div className="absolute w-8 h-8 border-2 rounded-full top-4 right-4 border-cyan-400 bg-cyan-400/10"></div>
           
           <div className="mb-6 text-6xl">⚡</div>
-          <h3 className="text-3xl font-bold mb-2 text-cyan-400">Fast Charge</h3>
-          <p className="text-slate-400 mb-6 text-lg">High-speed charging</p>
+          <h3 className="mb-2 text-3xl font-bold text-cyan-400">Fast Charge</h3>
+          <p className="mb-6 text-lg text-slate-400">High-speed charging</p>
           
           <div className="space-y-3 text-sm text-slate-300">
             <div className="flex items-center gap-2">
-              <span className="text-cyan-400 font-bold">⚡</span>
+              <span className="font-bold text-cyan-400">⚡</span>
               <span>0-80% in ~25 minutes</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-cyan-400 font-bold">⚡</span>
+              <span className="font-bold text-cyan-400">⚡</span>
               <span>150 kW max power</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-cyan-400 font-bold">⚡</span>
+              <span className="font-bold text-cyan-400">⚡</span>
               <span>Ideal for quick trips</span>
             </div>
           </div>
@@ -224,23 +374,23 @@ const ChargingModeScreen = ({ onFastCharge, onNormalCharge, userMode }) => {
           whileTap={{ scale: 0.98 }}
           onClick={handleNormalCharge}
           className="relative p-8 rounded-2xl border-2 cursor-pointer transition-all duration-300 backdrop-blur-sm bg-volt-navy/40 hover:bg-volt-navy/60 border-green-500 shadow-[0_0_30px_rgba(16,185,129,0.3)] hover:shadow-[0_0_50px_rgba(16,185,129,0.5)]">
-          <div className="absolute top-4 right-4 w-8 h-8 rounded-full border-2 border-green-500 bg-green-500/10"></div>
+          <div className="absolute w-8 h-8 border-2 border-green-500 rounded-full top-4 right-4 bg-green-500/10"></div>
           
           <div className="mb-6 text-6xl">🔋</div>
-          <h3 className="text-3xl font-bold mb-2 text-green-500">Normal Charge</h3>
-          <p className="text-slate-400 mb-6 text-lg">Balanced charging mode</p>
+          <h3 className="mb-2 text-3xl font-bold text-green-500">Normal Charge</h3>
+          <p className="mb-6 text-lg text-slate-400">Balanced charging mode</p>
           
           <div className="space-y-3 text-sm text-slate-300">
             <div className="flex items-center gap-2">
-              <span className="text-green-500 font-bold">✓</span>
+              <span className="font-bold text-green-500">✓</span>
               <span>Optimized for battery health</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-green-500 font-bold">✓</span>
+              <span className="font-bold text-green-500">✓</span>
               <span>50 kW balanced power</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-green-500 font-bold">✓</span>
+              <span className="font-bold text-green-500">✓</span>
               <span>Extended battery lifespan</span>
             </div>
           </div>
@@ -257,6 +407,7 @@ const AuthScreen = ({ onNext, voice, userMode }) => {
   const [shake, setShake] = useState(false);
   const [voiceModeActive, setVoiceModeActive] = useState(false);
   const inputRef = useRef(null);
+  const { incrementError, registerInteraction } = useCognitive();
 
   useEffect(() => { 
     beep(500);
@@ -284,6 +435,7 @@ const AuthScreen = ({ onNext, voice, userMode }) => {
       setShake(true);
       speak('Invalid phone number.');
       triggerHaptic([100, 50, 100]);
+      incrementError();
       try { window.dispatchEvent(new Event('voltcharge-invalid-phone')); } catch (e) { void e; }
       setTimeout(() => setShake(false), 700);
       return;
@@ -303,12 +455,13 @@ const AuthScreen = ({ onNext, voice, userMode }) => {
       beep(400);
       speak('Card recognized. Proceeding to charging setup.');
       setTimeout(() => {
-        onNext(null, 'normal');
+      onNext(null, 'normal');
       }, 300);
     } catch (err) {
       console.error('NFC tap error:', err);
       setError('Could not process card. Please try again.');
       triggerHaptic([100, 50, 100]);
+    incrementError();
     }
   };
 
@@ -319,7 +472,7 @@ const AuthScreen = ({ onNext, voice, userMode }) => {
   return (
     <div className={`flex flex-col h-full justify-center px-8 max-w-5xl mx-auto w-full ${modeClasses}`}>
       <div className={`mb-8 ${userMode === 'GUIDED' ? 'flex items-center gap-2 mb-12' : ''}`}>
-        {userMode === 'GUIDED' && <span className="text-volt-cyan font-bold">Step 1 of 3</span>}
+        {userMode === 'GUIDED' && <span className="font-bold text-volt-cyan">Step 1 of 3</span>}
         <h2 className={`${titleSize} font-bold font-sans text-glow`}>
           {userMode === 'GUIDED' ? 'Identify Yourself' : 'Authentication'}
         </h2>
@@ -339,9 +492,9 @@ const AuthScreen = ({ onNext, voice, userMode }) => {
         </Card>
 
         {/* OR Divider */}
-        <div className="hidden md:flex flex-col items-center justify-center absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10">
+        <div className="absolute z-10 flex-col items-center justify-center hidden -translate-x-1/2 -translate-y-1/2 md:flex left-1/2 top-1/2">
           <div className={`${userMode === 'ELDERLY' ? 'h-20' : 'h-16'} w-[1px] bg-slate-700 mb-2`}></div>
-          <span className="bg-volt-dark px-2 text-slate-500 font-mono text-xs">OR</span>
+          <span className="px-2 font-mono text-xs bg-volt-dark text-slate-500">OR</span>
           <div className={`${userMode === 'ELDERLY' ? 'h-20' : 'h-16'} w-[1px] bg-slate-700 mt-2`}></div>
         </div>
 
@@ -388,7 +541,7 @@ const AuthScreen = ({ onNext, voice, userMode }) => {
               </button>
             </div>
           </motion.div>
-          {error && <div className="text-red-400 text-xs mb-2 bg-red-950/30 p-2 rounded">{error}</div>}
+          {error && <div className="p-2 mb-2 text-xs text-red-400 rounded bg-red-950/30">{error}</div>}
         </Card>
       </div>
 
@@ -410,6 +563,7 @@ const OTPScreen = ({ onNext, voice, userMode, mobile }) => {
   const [initializing, setInitializing] = useState(true);
   const inputRef = useRef(null);
   const sendAttemptRef = useRef(0);
+  const { incrementError, incrementHelp } = useCognitive();
 
   // Clear error when user starts typing
   useEffect(() => {
@@ -450,6 +604,7 @@ const OTPScreen = ({ onNext, voice, userMode, mobile }) => {
         console.error('OTP send error:', err);
         const errorMsg = err instanceof Error ? err.message : 'Network error';
         setError(`Failed to send OTP: ${errorMsg}. Please try again.`);
+        incrementError();
         speak('Failed to send OTP. Check your connection and try again.');
         triggerHaptic([100, 50, 100]);
       } finally {
@@ -465,6 +620,7 @@ const OTPScreen = ({ onNext, voice, userMode, mobile }) => {
       speak('Enter a valid OTP.');
       setShake(true);
       setTimeout(() => setShake(false), 700);
+      incrementError();
       return;
     }
 
@@ -488,11 +644,13 @@ const OTPScreen = ({ onNext, voice, userMode, mobile }) => {
         setShake(true);
         triggerHaptic([100, 50, 100]);
         setTimeout(() => setShake(false), 700);
+        incrementError();
       }
     } catch (err) {
       console.error('OTP verify error:', err);
       setError('Network error. Please try again.');
       speak('Network error.');
+      incrementError();
     } finally {
       setIsLoading(false);
     }
@@ -548,6 +706,7 @@ const OTPScreen = ({ onNext, voice, userMode, mobile }) => {
       setError(`Resend failed: ${errorMsg}`);
       speak('Failed to resend OTP. Please try again.');
       triggerHaptic([100, 50, 100]);
+      incrementError();
     } finally {
       setIsLoading(false);
     }
@@ -562,7 +721,7 @@ const OTPScreen = ({ onNext, voice, userMode, mobile }) => {
         <motion.div
           animate={{ rotate: 360 }}
           transition={{ duration: 2, repeat: Infinity }}
-          className="w-16 h-16 rounded-full border-4 border-volt-cyan border-t-transparent mb-6"
+          className="w-16 h-16 mb-6 border-4 rounded-full border-volt-cyan border-t-transparent"
         />
         <h2 className={`font-bold font-sans text-glow mb-2 ${userMode === 'ELDERLY' ? 'text-3xl' : (userMode === 'GUIDED' ? 'text-2xl' : 'text-xl')}`}>
           Sending OTP...
@@ -581,7 +740,7 @@ const OTPScreen = ({ onNext, voice, userMode, mobile }) => {
         <motion.div
           animate={{ rotate: [0, -5, 5, -5, 0] }}
           transition={{ duration: 0.5, repeat: Infinity }}
-          className="w-16 h-16 rounded-full bg-red-950/50 border-2 border-red-600 flex items-center justify-center mb-6"
+          className="flex items-center justify-center w-16 h-16 mb-6 border-2 border-red-600 rounded-full bg-red-950/50"
         >
           <AlertTriangle className="text-red-400" size={32} />
         </motion.div>
@@ -608,8 +767,8 @@ const OTPScreen = ({ onNext, voice, userMode, mobile }) => {
 
   return (
     <div className={`flex flex-col h-full justify-center px-8 max-w-md mx-auto w-full ${modeClasses}`}>
-      <div className="text-center mb-12">
-        {userMode === 'GUIDED' && <span className="text-volt-cyan font-bold text-sm mb-2 block">Step 2 of 3</span>}
+      <div className="mb-12 text-center">
+        {userMode === 'GUIDED' && <span className="block mb-2 text-sm font-bold text-volt-cyan">Step 2 of 3</span>}
         <h2 className={`font-bold font-sans text-glow mb-2 ${userMode === 'ELDERLY' ? 'text-3xl' : (userMode === 'GUIDED' ? 'text-2xl' : 'text-xl')}`}>Enter OTP</h2>
         <p className={`${userMode === 'ELDERLY' ? 'text-lg' : (userMode === 'GUIDED' ? 'text-base' : 'text-sm')} text-slate-400`}>We sent a code to {mobile}</p>
       </div>
@@ -649,7 +808,7 @@ const OTPScreen = ({ onNext, voice, userMode, mobile }) => {
             </button>
           </div>
         </motion.div>
-        {error && <div className="text-red-400 text-xs mb-4 text-center bg-red-950/30 p-3 rounded">{error}</div>}
+        {error && <div className="p-3 mb-4 text-xs text-center text-red-400 rounded bg-red-950/30">{error}</div>}
         <Button
           onClick={handleVerifyOtp}
           variant="primary"
@@ -669,7 +828,7 @@ const OTPScreen = ({ onNext, voice, userMode, mobile }) => {
           {canResend ? (
             <button
               onClick={handleResendOtp}
-              className="text-volt-cyan hover:text-volt-green underline font-semibold"
+              className="font-semibold underline text-volt-cyan hover:text-volt-green"
             >
               Resend OTP
             </button>
@@ -752,7 +911,7 @@ const CableConnectionScreen = ({ onNext, userMode }) => {
         <motion.div
           animate={{ rotate: 360 }}
           transition={{ duration: 2, repeat: Infinity }}
-          className="w-16 h-16 rounded-full border-4 border-volt-cyan border-t-transparent mb-6"
+          className="w-16 h-16 mb-6 border-4 rounded-full border-volt-cyan border-t-transparent"
         />
         <h2 className={`font-bold font-sans text-glow mb-2 ${titleSize}`}>
           Detecting Cable...
@@ -767,7 +926,7 @@ const CableConnectionScreen = ({ onNext, userMode }) => {
   return (
     <div className={`flex flex-col h-full justify-center px-8 max-w-md mx-auto w-full ${modeClasses}`}>
       <div className={userMode === 'GUIDED' ? 'flex items-center gap-2 mb-12' : 'mb-8'}>
-        {userMode === 'GUIDED' && <span className="text-volt-cyan font-bold">Step 2 of 3</span>}
+        {userMode === 'GUIDED' && <span className="font-bold text-volt-cyan">Step 2 of 3</span>}
         <h2 className={`font-bold font-sans text-glow ${titleSize}`}>
           {userMode === 'GUIDED' ? 'Connect Cable' : 'Cable Connection'}
         </h2>
@@ -1191,7 +1350,7 @@ const ChargingScreen = ({ onComplete, onError, mode = 'normal', userMode = 'STAN
   }, []);
 
   return (
-    <div className="flex flex-col h-full items-center justify-center max-w-4xl mx-auto w-full relative">
+    <div className="relative flex flex-col items-center justify-center w-full h-full max-w-4xl mx-auto">
       
       {/* MODE INDICATOR - TOP */}
       <div className={`absolute top-24 left-0 right-0 mx-auto w-fit px-6 py-2 rounded-full border-2 font-bold uppercase tracking-wider text-sm flex items-center gap-2 ${
@@ -1209,11 +1368,11 @@ const ChargingScreen = ({ onComplete, onError, mode = 'normal', userMode = 'STAN
         {showEmergencyConfirm && (
           <motion.div 
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="absolute inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center"
+            className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md"
           >
-            <Card className="w-96 text-center border-red-600">
-              <h2 className="text-2xl font-bold text-red-500 mb-4">⚠️ Emergency Stop</h2>
-              <p className="text-slate-400 mb-6">Are you sure you want to stop charging immediately?</p>
+            <Card className="text-center border-red-600 w-96">
+              <h2 className="mb-4 text-2xl font-bold text-red-500">⚠️ Emergency Stop</h2>
+              <p className="mb-6 text-slate-400">Are you sure you want to stop charging immediately?</p>
               <div className="space-y-3">
                 <Button onClick={confirmEmergencyStop} variant="danger">YES, STOP NOW</Button>
                 <Button onClick={() => { setShowEmergencyConfirm(false); setErrorCount(prev => prev + 1); recordInteraction('emergency_cancel'); }} variant="secondary">CANCEL</Button>
@@ -1225,11 +1384,11 @@ const ChargingScreen = ({ onComplete, onError, mode = 'normal', userMode = 'STAN
 
       {/* Admin Metrics Panel (hidden, Shift+A) */}
       {showAdminPanel && (
-        <div className="fixed top-20 right-8 z-60 bg-volt-navy/90 p-4 rounded-lg border border-white/10 w-64 text-sm">
-          <div className="font-bold mb-2">Research Metrics</div>
-          <div className="text-xs text-slate-400 mb-2">Total task time: <span className="float-right font-mono">{startTime ? Math.floor((nowTick - startTime)/1000) : 0}s</span></div>
-          <div className="text-xs text-slate-400 mb-2">Errors: <span className="float-right font-mono">{errorCount}</span></div>
-          <div className="text-xs text-slate-400 mb-2">Interactions: <span className="float-right font-mono">{interactionCount}</span></div>
+        <div className="fixed w-64 p-4 text-sm border rounded-lg top-20 right-8 z-60 bg-volt-navy/90 border-white/10">
+          <div className="mb-2 font-bold">Research Metrics</div>
+          <div className="mb-2 text-xs text-slate-400">Total task time: <span className="float-right font-mono">{startTime ? Math.floor((nowTick - startTime)/1000) : 0}s</span></div>
+          <div className="mb-2 text-xs text-slate-400">Errors: <span className="float-right font-mono">{errorCount}</span></div>
+          <div className="mb-2 text-xs text-slate-400">Interactions: <span className="float-right font-mono">{interactionCount}</span></div>
           <div className="text-xs text-slate-400">Final Cognitive Load: <span className="float-right font-mono">{cognitiveMetrics.cognitiveLoadLevel}</span></div>
         </div>
       )}
@@ -1239,11 +1398,11 @@ const ChargingScreen = ({ onComplete, onError, mode = 'normal', userMode = 'STAN
         {show80Modal && (
           <motion.div 
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="absolute inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center"
+            className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md"
           >
-            <Card className="w-96 text-center border-volt-cyan">
-              <h2 className="text-2xl font-bold mb-4">80% Limit Reached</h2>
-              <p className="text-slate-400 mb-6">Charging slowed to protect battery health.</p>
+            <Card className="text-center w-96 border-volt-cyan">
+              <h2 className="mb-4 text-2xl font-bold">80% Limit Reached</h2>
+              <p className="mb-6 text-slate-400">Charging slowed to protect battery health.</p>
               <div className="space-y-3">
                 <Button onClick={() => { setShow80Modal(false); setIsPaused(false); recordInteraction('continue_80'); }}>CONTINUE TO 100%</Button>
                 <Button variant="danger" onClick={() => { recordInteraction('stop_80_modal'); handleSessionComplete('user_stop'); }}>STOP NOW</Button>
@@ -1302,30 +1461,30 @@ const ChargingScreen = ({ onComplete, onError, mode = 'normal', userMode = 'STAN
 
       {/* Stats Grid - show advanced stats only for EXPERT or when cognitive load is LOW */}
       {(userMode === 'EXPERT' || cognitiveMetrics.cognitiveLoadLevel === 'LOW') && (
-        <div className="grid grid-cols-3 gap-4 w-full mb-8">
+        <div className="grid w-full grid-cols-3 gap-4 mb-8">
           <Card className="flex flex-col items-center py-4">
-            <Clock size={20} className="text-volt-cyan mb-2" />
-            <span className="text-xl font-bold font-mono">{Math.max(0, Math.floor((100 - progress) * 0.5))} min</span>
+            <Clock size={20} className="mb-2 text-volt-cyan" />
+            <span className="font-mono text-xl font-bold">{Math.max(0, Math.floor((100 - progress) * 0.5))} min</span>
             <span className="text-[10px] text-slate-500 uppercase">Remaining</span>
           </Card>
           <Card className="flex flex-col items-center py-4">
-            <Zap size={20} className="text-volt-green mb-2" />
-            <span className="text-xl font-bold font-mono">{mode === 'fast' ? '150' : '50'} kW</span>
+            <Zap size={20} className="mb-2 text-volt-green" />
+            <span className="font-mono text-xl font-bold">{mode === 'fast' ? '150' : '50'} kW</span>
             <span className="text-[10px] text-slate-500 uppercase">Power</span>
           </Card>
           <Card className="flex flex-col items-center py-4">
-            <span className="text-lg text-volt-cyan font-bold">$</span>
-            <span className="text-xl font-bold font-mono">{(progress * 0.45).toFixed(2)}</span>
+            <span className="text-lg font-bold text-volt-cyan">$</span>
+            <span className="font-mono text-xl font-bold">{(progress * 0.45).toFixed(2)}</span>
             <span className="text-[10px] text-slate-500 uppercase">Cost</span>
           </Card>
         </div>
       )}
 
       {/* SAFETY FEATURES PANEL */}
-      <div className="w-full max-w-3xl bg-volt-navy/40 border border-white/5 rounded-2xl p-6 mb-8">
-        <h3 className="text-sm uppercase tracking-widest font-bold mb-4 text-slate-300">Safety Features</h3>
+      <div className="w-full max-w-3xl p-6 mb-8 border bg-volt-navy/40 border-white/5 rounded-2xl">
+        <h3 className="mb-4 text-sm font-bold tracking-widest uppercase text-slate-300">Safety Features</h3>
         
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+        <div className="grid grid-cols-1 gap-4 mb-6 md:grid-cols-2">
           {/* Over Voltage Warning Card */}
           <motion.div 
             className={`p-4 rounded-lg border-2 transition-all ${
@@ -1334,29 +1493,29 @@ const ChargingScreen = ({ onComplete, onError, mode = 'normal', userMode = 'STAN
                 : 'border-green-600 bg-green-950/20'
             }`}>
             <div className="flex items-center justify-between mb-2">
-              <span className="font-bold text-sm">{overVoltageWarning ? '⚠️ Over Voltage' : '✓ Voltage Safe'}</span>
+              <span className="text-sm font-bold">{overVoltageWarning ? '⚠️ Over Voltage' : '✓ Voltage Safe'}</span>
               <span className={`text-xs font-mono ${overVoltageWarning ? 'text-red-400' : 'text-green-400'}`}>
                 {overVoltageWarning ? '420V' : '400V'}
               </span>
             </div>
-            <p className="text-xs text-slate-400 mb-3">
+            <p className="mb-3 text-xs text-slate-400">
               {overVoltageWarning ? 'Over voltage detected. Charging paused.' : 'Voltage within safe limits'}
             </p>
             {overVoltageWarning && (
-              <Button onClick={resetOverVoltageWarning} variant="secondary" className="text-xs py-2">
+              <Button onClick={resetOverVoltageWarning} variant="secondary" className="py-2 text-xs">
                 Reset
               </Button>
             )}
           </motion.div>
 
           {/* Child Lock Toggle */}
-          <div className="p-4 rounded-lg border-2 border-white/10 bg-volt-navy/20 flex flex-col justify-between">
+          <div className="flex flex-col justify-between p-4 border-2 rounded-lg border-white/10 bg-volt-navy/20">
             <div>
               <div className="flex items-center justify-between mb-2">
-                <span className="font-bold text-sm">Child Lock Mode</span>
+                <span className="text-sm font-bold">Child Lock Mode</span>
                 {childLockEnabled && <Lock size={16} className="text-yellow-500" />}
               </div>
-              <p className="text-xs text-slate-400 mb-3">
+              <p className="mb-3 text-xs text-slate-400">
                 {childLockEnabled ? 'Disabled: Stop & Mode buttons' : 'Safety lock for critical controls'}
               </p>
             </div>
@@ -1419,7 +1578,7 @@ const ChargingScreen = ({ onComplete, onError, mode = 'normal', userMode = 'STAN
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -10 }}
-            className="fixed bottom-40 right-8 bg-volt-navy/80 px-4 py-2 rounded-lg text-sm border border-white/5"
+            className="fixed px-4 py-2 text-sm border rounded-lg bottom-40 right-8 bg-volt-navy/80 border-white/5"
           >
             {voiceMessage}
           </motion.div>
@@ -1427,7 +1586,7 @@ const ChargingScreen = ({ onComplete, onError, mode = 'normal', userMode = 'STAN
       </AnimatePresence>
 
       {/* Microphone Button - bottom-right */}
-      <div className="fixed bottom-8 right-8 z-50">
+      <div className="fixed z-50 bottom-8 right-8">
         <motion.button
           whileTap={{ scale: 0.95 }}
           onClick={() => { micActive ? stopRecognition() : startRecognition(); }}
@@ -1436,7 +1595,7 @@ const ChargingScreen = ({ onComplete, onError, mode = 'normal', userMode = 'STAN
         >
           <div className="text-2xl">🎤</div>
         </motion.button>
-        <div className="text-xs text-slate-400 mt-2 text-center">Tap to use voice commands</div>
+        <div className="mt-2 text-xs text-center text-slate-400">Tap to use voice commands</div>
       </div>
     </div>
   );
@@ -1444,6 +1603,7 @@ const ChargingScreen = ({ onComplete, onError, mode = 'normal', userMode = 'STAN
 
 // 5. ERROR SCREEN - CONNECTOR ERROR
 const ErrorScreen = ({ onRetry, onHome }) => {
+  const { incrementHelp } = useCognitive();
   useEffect(() => {
     triggerHaptic([100, 50, 100, 50, 100, 50, 100]);
     speak("Connection error. Connector not detected.");
@@ -1451,7 +1611,7 @@ const ErrorScreen = ({ onRetry, onHome }) => {
   }, []);
 
   return (
-    <div className="flex flex-col h-full items-center justify-center max-w-3xl mx-auto w-full">
+    <div className="flex flex-col items-center justify-center w-full h-full max-w-3xl mx-auto">
       <motion.div
         animate={{ scale: [1, 1.1, 0.95, 1.05, 1] }}
         transition={{ duration: 0.6, repeat: Infinity }}
@@ -1460,12 +1620,12 @@ const ErrorScreen = ({ onRetry, onHome }) => {
         <AlertTriangle size={48} className="text-volt-red animate-pulse" />
       </motion.div>
 
-      <h2 className="text-3xl font-bold text-volt-red mb-2">⚠️ Connector Error</h2>
-      <p className="text-slate-300 mb-8 text-lg">Connector not detected. Please reconnect cable.</p>
+      <h2 className="mb-2 text-3xl font-bold text-volt-red">⚠️ Connector Error</h2>
+      <p className="mb-8 text-lg text-slate-300">Connector not detected. Please reconnect cable.</p>
 
-      <div className="w-full bg-red-950/40 border-l-4 border-volt-red rounded-lg p-6 mb-8 text-left">
-        <h3 className="text-volt-red font-bold mb-3">Error Code: E-CCS-001</h3>
-        <div className="space-y-2 text-slate-300 text-sm">
+      <div className="w-full p-6 mb-8 text-left border-l-4 rounded-lg bg-red-950/40 border-volt-red">
+        <h3 className="mb-3 font-bold text-volt-red">Error Code: E-CCS-001</h3>
+        <div className="space-y-2 text-sm text-slate-300">
           <div className="flex items-center gap-2">
             <span className="text-volt-red">⚡</span>
             <span>Cable may not be fully inserted</span>
@@ -1481,17 +1641,26 @@ const ErrorScreen = ({ onRetry, onHome }) => {
         </div>
       </div>
 
-      <div className="bg-volt-navy/60 w-full p-6 rounded-lg border border-white/10 mb-8 flex flex-col items-center">
-        <span className="font-bold text-sm mb-4">🔌 Check Cable Connection</span>
+      <div className="flex flex-col items-center w-full p-6 mb-8 border rounded-lg bg-volt-navy/60 border-white/10">
+        <span className="mb-4 text-sm font-bold">🔌 Check Cable Connection</span>
         <motion.div animate={{ y: [0, 10, 0] }} transition={{ duration: 0.8, repeat: Infinity }}>
           <ArrowRight className="rotate-180 text-volt-red" size={28} />
         </motion.div>
-        <span className="text-xs text-slate-400 mt-4 text-center">Remove and reconnect the cable firmly until you hear a click</span>
+        <span className="mt-4 text-xs text-center text-slate-400">Remove and reconnect the cable firmly until you hear a click</span>
       </div>
 
-      <div className="flex gap-4 w-full">
+      <div className="flex w-full gap-4">
         <Button onClick={onRetry} variant="primary" className="flex-1">Retry Connection</Button>
-        <Button onClick={onHome} variant="secondary" className="flex-1">Help</Button>
+        <Button
+          onClick={() => {
+            incrementHelp();
+            onHome();
+          }}
+          variant="secondary"
+          className="flex-1"
+        >
+          Help
+        </Button>
       </div>
     </div>
   );
@@ -1506,7 +1675,7 @@ const NetworkErrorScreen = ({ onRetry, onHome }) => {
   }, []);
 
   return (
-    <div className="flex flex-col h-full items-center justify-center max-w-3xl mx-auto w-full">
+    <div className="flex flex-col items-center justify-center w-full h-full max-w-3xl mx-auto">
       <motion.div
         animate={{ opacity: [0.5, 1, 0.5] }}
         transition={{ duration: 1.5, repeat: Infinity }}
@@ -1515,12 +1684,12 @@ const NetworkErrorScreen = ({ onRetry, onHome }) => {
         <Wifi size={48} className="text-orange-400" />
       </motion.div>
 
-      <h2 className="text-3xl font-bold text-orange-400 mb-2">🌐 Network Error</h2>
-      <p className="text-slate-300 mb-8 text-lg">Network unavailable. Please wait or try again.</p>
+      <h2 className="mb-2 text-3xl font-bold text-orange-400">🌐 Network Error</h2>
+      <p className="mb-8 text-lg text-slate-300">Network unavailable. Please wait or try again.</p>
 
-      <div className="w-full bg-orange-950/40 border-l-4 border-orange-500 rounded-lg p-6 mb-8 text-left">
-        <h3 className="text-orange-400 font-bold mb-3">Error Code: E-NET-001</h3>
-        <div className="space-y-2 text-slate-300 text-sm">
+      <div className="w-full p-6 mb-8 text-left border-l-4 border-orange-500 rounded-lg bg-orange-950/40">
+        <h3 className="mb-3 font-bold text-orange-400">Error Code: E-NET-001</h3>
+        <div className="space-y-2 text-sm text-slate-300">
           <div className="flex items-center gap-2">
             <span className="text-orange-400">📡</span>
             <span>No internet connection</span>
@@ -1536,14 +1705,14 @@ const NetworkErrorScreen = ({ onRetry, onHome }) => {
         </div>
       </div>
 
-      <div className="bg-volt-navy/60 w-full p-6 rounded-lg border border-white/10 mb-8 flex flex-col items-center">
-        <span className="font-bold text-sm mb-4">⏳ Retrying in a moment...</span>
+      <div className="flex flex-col items-center w-full p-6 mb-8 border rounded-lg bg-volt-navy/60 border-white/10">
+        <span className="mb-4 text-sm font-bold">⏳ Retrying in a moment...</span>
         <motion.div animate={{ rotate: 360 }} transition={{ duration: 2, repeat: Infinity }}>
           <Wifi className="text-orange-400" size={28} />
         </motion.div>
       </div>
 
-      <div className="flex gap-4 w-full">
+      <div className="flex w-full gap-4">
         <Button onClick={onRetry} variant="primary" className="flex-1">Retry Now</Button>
         <Button onClick={onHome} variant="secondary" className="flex-1">Help</Button>
       </div>
@@ -1560,7 +1729,7 @@ const OverheatErrorScreen = ({ onRetry, onHome }) => {
   }, []);
 
   return (
-    <div className="flex flex-col h-full items-center justify-center max-w-3xl mx-auto w-full">
+    <div className="flex flex-col items-center justify-center w-full h-full max-w-3xl mx-auto">
       <motion.div
         animate={{ scale: [1, 1.15, 1] }}
         transition={{ duration: 1, repeat: Infinity }}
@@ -1569,13 +1738,13 @@ const OverheatErrorScreen = ({ onRetry, onHome }) => {
         <AlertTriangle size={48} className="text-orange-500" />
       </motion.div>
 
-      <h2 className="text-3xl font-bold text-orange-500 mb-2">🔥 Battery Overheat</h2>
-      <p className="text-slate-300 mb-8 text-lg">Battery temperature high. Charging paused for safety.</p>
+      <h2 className="mb-2 text-3xl font-bold text-orange-500">🔥 Battery Overheat</h2>
+      <p className="mb-8 text-lg text-slate-300">Battery temperature high. Charging paused for safety.</p>
 
-      <div className="w-full bg-orange-950/40 border-l-4 border-orange-600 rounded-lg p-6 mb-8 text-left">
-        <h3 className="text-orange-500 font-bold mb-3">Error Code: E-THERM-001</h3>
-        <div className="space-y-3 text-slate-300 text-sm">
-          <div className="flex items-center gap-3 bg-black/30 p-3 rounded">
+      <div className="w-full p-6 mb-8 text-left border-l-4 border-orange-600 rounded-lg bg-orange-950/40">
+        <h3 className="mb-3 font-bold text-orange-500">Error Code: E-THERM-001</h3>
+        <div className="space-y-3 text-sm text-slate-300">
+          <div className="flex items-center gap-3 p-3 rounded bg-black/30">
             <span className="text-2xl">🌡️</span>
             <div>
               <div className="font-bold text-orange-400">Battery Temperature: 58°C</div>
@@ -1589,14 +1758,14 @@ const OverheatErrorScreen = ({ onRetry, onHome }) => {
         </div>
       </div>
 
-      <div className="bg-volt-navy/60 w-full p-6 rounded-lg border border-white/10 mb-8 flex flex-col items-center">
-        <span className="font-bold text-sm mb-4">🔌 Allow Battery to Cool</span>
-        <div className="text-xs text-slate-400 text-center">
+      <div className="flex flex-col items-center w-full p-6 mb-8 border rounded-lg bg-volt-navy/60 border-white/10">
+        <span className="mb-4 text-sm font-bold">🔌 Allow Battery to Cool</span>
+        <div className="text-xs text-center text-slate-400">
           Move vehicle to a shaded area or wait 15-20 minutes before resuming
         </div>
       </div>
 
-      <div className="flex gap-4 w-full">
+      <div className="flex w-full gap-4">
         <Button onClick={onRetry} variant="primary" className="flex-1">Check Temperature</Button>
         <Button onClick={onHome} variant="secondary" className="flex-1">Help</Button>
       </div>
@@ -1613,7 +1782,7 @@ const PaymentErrorScreen = ({ onRetry, onHome }) => {
   }, []);
 
   return (
-    <div className="flex flex-col h-full items-center justify-center max-w-3xl mx-auto w-full">
+    <div className="flex flex-col items-center justify-center w-full h-full max-w-3xl mx-auto">
       <motion.div
         animate={{ rotate: [0, -5, 5, -5, 0] }}
         transition={{ duration: 0.5, repeat: Infinity }}
@@ -1622,12 +1791,12 @@ const PaymentErrorScreen = ({ onRetry, onHome }) => {
         <X size={48} className="text-red-500" />
       </motion.div>
 
-      <h2 className="text-3xl font-bold text-red-500 mb-2">💳 Payment Failed</h2>
-      <p className="text-slate-300 mb-8 text-lg">Payment failed. Try another method.</p>
+      <h2 className="mb-2 text-3xl font-bold text-red-500">💳 Payment Failed</h2>
+      <p className="mb-8 text-lg text-slate-300">Payment failed. Try another method.</p>
 
-      <div className="w-full bg-red-950/40 border-l-4 border-red-600 rounded-lg p-6 mb-8 text-left">
-        <h3 className="text-red-500 font-bold mb-3">Error Code: E-PAY-001</h3>
-        <div className="space-y-2 text-slate-300 text-sm">
+      <div className="w-full p-6 mb-8 text-left border-l-4 border-red-600 rounded-lg bg-red-950/40">
+        <h3 className="mb-3 font-bold text-red-500">Error Code: E-PAY-001</h3>
+        <div className="space-y-2 text-sm text-slate-300">
           <div className="flex items-center gap-2">
             <span className="text-red-500">❌</span>
             <span>Card declined by issuer</span>
@@ -1643,14 +1812,14 @@ const PaymentErrorScreen = ({ onRetry, onHome }) => {
         </div>
       </div>
 
-      <div className="bg-volt-navy/60 w-full p-6 rounded-lg border border-white/10 mb-8 flex flex-col items-center">
-        <span className="font-bold text-sm mb-3">💰 Try Another Payment Method</span>
-        <div className="text-xs text-slate-400 text-center">
+      <div className="flex flex-col items-center w-full p-6 mb-8 border rounded-lg bg-volt-navy/60 border-white/10">
+        <span className="mb-3 text-sm font-bold">💰 Try Another Payment Method</span>
+        <div className="text-xs text-center text-slate-400">
           Use a different card, Apple Pay, or Google Pay to complete the transaction
         </div>
       </div>
 
-      <div className="flex gap-4 w-full">
+      <div className="flex w-full gap-4">
         <Button onClick={onRetry} variant="primary" className="flex-1">Try Again</Button>
         <Button onClick={onHome} variant="secondary" className="flex-1">Help</Button>
       </div>
@@ -1667,7 +1836,7 @@ const ChargingErrorScreen = ({ onRetry, onHome }) => {
   }, []);
 
   return (
-    <div className="flex flex-col h-full items-center justify-center max-w-3xl mx-auto w-full">
+    <div className="flex flex-col items-center justify-center w-full h-full max-w-3xl mx-auto">
       <motion.div
         animate={{ scale: [1, 1.05, 1] }}
         transition={{ duration: 0.6, repeat: Infinity }}
@@ -1676,12 +1845,12 @@ const ChargingErrorScreen = ({ onRetry, onHome }) => {
         <AlertTriangle size={48} className="text-red-500" />
       </motion.div>
 
-      <h2 className="text-3xl font-bold text-red-500 mb-2">⚠️ Charging Interrupted</h2>
-      <p className="text-slate-300 mb-8 text-lg">Power connection lost during charging</p>
+      <h2 className="mb-2 text-3xl font-bold text-red-500">⚠️ Charging Interrupted</h2>
+      <p className="mb-8 text-lg text-slate-300">Power connection lost during charging</p>
 
-      <div className="w-full bg-red-950/40 border-l-4 border-red-600 rounded-lg p-6 mb-8 text-left">
-        <h3 className="text-red-500 font-bold mb-3">Error Code: E-PWR-002</h3>
-        <div className="space-y-2 text-slate-300 text-sm">
+      <div className="w-full p-6 mb-8 text-left border-l-4 border-red-600 rounded-lg bg-red-950/40">
+        <h3 className="mb-3 font-bold text-red-500">Error Code: E-PWR-002</h3>
+        <div className="space-y-2 text-sm text-slate-300">
           <div className="flex items-center gap-2">
             <span className="text-red-500">🔌</span>
             <span>Cable disconnected unexpectedly</span>
@@ -1697,15 +1866,15 @@ const ChargingErrorScreen = ({ onRetry, onHome }) => {
         </div>
       </div>
 
-      <div className="bg-volt-navy/60 w-full p-6 rounded-lg border border-white/10 mb-8 flex flex-col items-center">
-        <span className="font-bold text-sm mb-4">🔌 Reconnect and Retry</span>
+      <div className="flex flex-col items-center w-full p-6 mb-8 border rounded-lg bg-volt-navy/60 border-white/10">
+        <span className="mb-4 text-sm font-bold">🔌 Reconnect and Retry</span>
         <motion.div animate={{ y: [0, 10, 0] }} transition={{ duration: 0.8, repeat: Infinity }}>
-          <ArrowRight className="rotate-180 text-red-500" size={28} />
+          <ArrowRight className="text-red-500 rotate-180" size={28} />
         </motion.div>
-        <span className="text-xs text-slate-400 mt-4 text-center">Ensure cable is firmly connected before retrying</span>
+        <span className="mt-4 text-xs text-center text-slate-400">Ensure cable is firmly connected before retrying</span>
       </div>
 
-      <div className="flex gap-4 w-full">
+      <div className="flex w-full gap-4">
         <Button onClick={onRetry} variant="primary" className="flex-1">Retry Charging</Button>
         <Button onClick={onHome} variant="secondary" className="flex-1">Help</Button>
       </div>
@@ -1845,9 +2014,9 @@ const HistoryScreen = ({ onBack, userMode }) => {
 
       <div className="space-y-4">
         {[1, 2, 3].map(i => (
-          <div key={i} className="flex justify-between items-center p-4 bg-volt-navy/40 rounded-xl border border-white/5">
+          <div key={i} className="flex items-center justify-between p-4 border bg-volt-navy/40 rounded-xl border-white/5">
             <div className="flex items-center gap-4">
-              <div className="p-2 bg-volt-cyan/10 rounded-lg">
+              <div className="p-2 rounded-lg bg-volt-cyan/10">
                 <Zap size={16} className="text-volt-cyan" />
               </div>
               <div>
@@ -1948,9 +2117,9 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-hexagon text-white font-sans flex flex-col">
+    <div className="flex flex-col min-h-screen font-sans text-white bg-hexagon">
       <Header voice={voice} />
-      <div className="flex-1 pt-20 pb-8 px-4 overflow-y-auto overflow-x-hidden">
+      <div className="flex-1 px-4 pt-20 pb-8 overflow-x-hidden overflow-y-auto">
         <AnimatePresence mode="wait">
           <motion.div
             key={screen}

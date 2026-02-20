@@ -1,6 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import { sendOtpSms, formatSmsError } from './utils/sms.js';
+import { isTwilioConfigured } from './config/twilio.js';
 
 dotenv.config();
 
@@ -18,12 +20,51 @@ app.use(cors({
 // 🔒 OTP STORAGE (in-memory, expires after 5 minutes)
 const otpStore = {};
 
+// 🔒 RATE LIMITING (prevent spam)
+const rateLimitStore = {};
+const RATE_LIMIT_WINDOW = 60 * 1000; // 60 seconds
+const MAX_REQUESTS_PER_WINDOW = 3;
+
+const checkRateLimit = (mobile) => {
+  const now = Date.now();
+  const key = mobile;
+  
+  if (!rateLimitStore[key]) {
+    rateLimitStore[key] = { count: 1, resetAt: now + RATE_LIMIT_WINDOW };
+    return { allowed: true };
+  }
+
+  if (now > rateLimitStore[key].resetAt) {
+    rateLimitStore[key] = { count: 1, resetAt: now + RATE_LIMIT_WINDOW };
+    return { allowed: true };
+  }
+
+  rateLimitStore[key].count += 1;
+
+  if (rateLimitStore[key].count > MAX_REQUESTS_PER_WINDOW) {
+    const waitTime = Math.ceil((rateLimitStore[key].resetAt - now) / 1000);
+    return {
+      allowed: false,
+      message: `Too many requests. Please wait ${waitTime} seconds before requesting a new OTP.`
+    };
+  }
+
+  return { allowed: true };
+};
+
 // ✅ HEALTH CHECK
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'Server running', timestamp: new Date().toISOString() });
+  res.json({
+    status: 'Server running',
+    timestamp: new Date().toISOString(),
+    twilio: {
+      configured: isTwilioConfigured,
+      smsEnabled: isTwilioConfigured
+    }
+  });
 });
 
-// ✅ SEND OTP ENDPOINT
+// ✅ SEND OTP ENDPOINT (Production-Ready)
 app.post('/api/send-otp', async (req, res) => {
   try {
     const { mobile } = req.body;
@@ -45,6 +86,15 @@ app.post('/api/send-otp', async (req, res) => {
       });
     }
 
+    // ✅ RATE LIMITING CHECK
+    const rateLimitCheck = checkRateLimit(cleanMobile);
+    if (!rateLimitCheck.allowed) {
+      return res.status(429).json({
+        success: false,
+        message: rateLimitCheck.message
+      });
+    }
+
     // Generate 6-digit OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     
@@ -56,21 +106,60 @@ app.post('/api/send-otp', async (req, res) => {
       attempts: 0
     };
 
-    console.log(`✅ OTP sent to ${cleanMobile}: ${otp}`);
+    // ✅ SEND SMS VIA TWILIO (Production)
+    let smsResult;
+    try {
+      smsResult = await sendOtpSms(cleanMobile, otp);
+      
+      if (!smsResult.success) {
+        throw new Error(smsResult.message || 'Failed to send SMS');
+      }
 
-    // In production, send via Twilio or SMS provider
-    // await sendSms(cleanMobile, `Your OTP is ${otp}`);
+      console.log(`✅ OTP sent to ${cleanMobile} via ${smsResult.method}`);
+      
+      // Log SMS details for monitoring (without exposing OTP)
+      if (smsResult.sid) {
+        console.log(`   SMS SID: ${smsResult.sid}`);
+        console.log(`   Status: ${smsResult.status}`);
+      }
 
+    } catch (smsError) {
+      console.error('❌ SMS Send Error:', {
+        mobile: cleanMobile,
+        error: smsError.message || smsError,
+        code: smsError.twilioCode
+      });
+
+      // Format error for client
+      const formattedError = formatSmsError(smsError);
+      
+      // Don't delete OTP from store - allow retry
+      return res.status(500).json({
+        success: false,
+        message: formattedError.message,
+        hint: formattedError.hint,
+        smsMethod: 'failed',
+        // In development, still return OTP for testing
+        testOtp: process.env.NODE_ENV === 'development' ? otp : undefined
+      });
+    }
+
+    // ✅ SUCCESS RESPONSE
     return res.json({
       success: true,
       message: 'OTP sent successfully',
       mobile: cleanMobile,
-      // Remove in production - for testing only
-      testOtp: process.env.NODE_ENV === 'development' ? otp : undefined
+      smsMethod: smsResult.method || 'twilio',
+      // Only return OTP in development mode for testing
+      testOtp: process.env.NODE_ENV === 'development' && !isTwilioConfigured ? otp : undefined
     });
 
   } catch (error) {
-    console.error('❌ OTP Send Error:', error);
+    console.error('❌ OTP Send Error:', {
+      message: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+    
     return res.status(500).json({
       success: false,
       message: 'Server error while sending OTP',
@@ -154,7 +243,7 @@ app.post('/api/verify-otp', (req, res) => {
 });
 
 // ✅ RESEND OTP (same as send, but checks cooldown)
-app.post('/api/resend-otp', (req, res) => {
+app.post('/api/resend-otp', async (req, res) => {
   try {
     const { mobile } = req.body;
 
@@ -174,6 +263,15 @@ app.post('/api/resend-otp', (req, res) => {
       });
     }
 
+    // ✅ RATE LIMITING CHECK
+    const rateLimitCheck = checkRateLimit(cleanMobile);
+    if (!rateLimitCheck.allowed) {
+      return res.status(429).json({
+        success: false,
+        message: rateLimitCheck.message
+      });
+    }
+
     // Generate new OTP (override old one)
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
@@ -184,20 +282,47 @@ app.post('/api/resend-otp', (req, res) => {
       attempts: 0
     };
 
-    console.log(`✅ OTP resent to ${cleanMobile}: ${otp}`);
+    // ✅ SEND SMS VIA TWILIO
+    let smsResult;
+    try {
+      smsResult = await sendOtpSms(cleanMobile, otp);
+      
+      if (!smsResult.success) {
+        throw new Error(smsResult.message || 'Failed to send SMS');
+      }
+
+      console.log(`✅ OTP resent to ${cleanMobile} via ${smsResult.method}`);
+
+    } catch (smsError) {
+      console.error('❌ SMS Resend Error:', {
+        mobile: cleanMobile,
+        error: smsError.message || smsError
+      });
+
+      const formattedError = formatSmsError(smsError);
+      
+      return res.status(500).json({
+        success: false,
+        message: formattedError.message,
+        hint: formattedError.hint,
+        testOtp: process.env.NODE_ENV === 'development' ? otp : undefined
+      });
+    }
 
     return res.json({
       success: true,
       message: 'OTP resent successfully',
       mobile: cleanMobile,
-      testOtp: process.env.NODE_ENV === 'development' ? otp : undefined
+      smsMethod: smsResult.method || 'twilio',
+      testOtp: process.env.NODE_ENV === 'development' && !isTwilioConfigured ? otp : undefined
     });
 
   } catch (error) {
     console.error('❌ OTP Resend Error:', error);
     return res.status(500).json({
       success: false,
-      message: 'Server error while resending OTP'
+      message: 'Server error while resending OTP',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
@@ -232,6 +357,8 @@ app.listen(PORT, () => {
 ✓ Database: In-Memory OTP Store
 ✓ CORS: Enabled for http://localhost:5173
 ✓ NODE_ENV: ${process.env.NODE_ENV || 'development'}
+✓ SMS Provider: ${isTwilioConfigured ? 'Twilio (Production)' : 'Fallback (Development)'}
+✓ Rate Limiting: ${MAX_REQUESTS_PER_WINDOW} requests per ${RATE_LIMIT_WINDOW / 1000}s
   `);
 });
 
