@@ -1,41 +1,34 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  Zap, Clock, ShieldCheck, Wifi, Smartphone, ArrowRight, 
-  CheckCircle2, Circle, AlertTriangle, RotateCcw, Phone, 
+import {
+  Zap, Clock, ShieldCheck, Wifi, Smartphone, ArrowRight,
+  CheckCircle2, Circle, AlertTriangle, RotateCcw, Phone,
   Battery, History, X, Lock, Unlock, Speaker
 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { triggerHaptic, speak, beep } from './utils';
+import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import useVoiceCommands from './hooks/useVoiceCommands';
 import MicButton from './components/MicButton';
 import { useCognitive } from './hooks/useCognitiveEngine';
+import SmsDashboard from './components/SmsDashboard';
+import FirstTimeTutorial from './pages/FirstTimeTutorial';
+import FirstTimeNFCAuth from './components/FirstTimeNFCAuth';
+import MainAuthentication from './components/MainAuthentication';
+import ErrorDashboard from './pages/ErrorDashboard';
 
-// reference to avoid unused-import linter in some environments
-const _motionRef = motion;
-
-// --- UI COMPONENTS ---
+// --- UI COMPONENTS (Defined early to avoid ReferenceErrors) ---
 
 const Card = ({ children, className, onClick, active }) => {
   const { registerInteraction } = useCognitive();
-
   const handleClick = (event) => {
-    if (onClick) {
-      onClick(event);
-    }
+    if (onClick) onClick(event);
     registerInteraction();
   };
-
   return (
-    <div 
+    <div
       onClick={handleClick}
-      className={`
-        relative p-6 rounded-2xl border transition-all duration-300 backdrop-blur-sm
-        ${active 
-          ? 'bg-volt-navy/80 border-volt-cyan shadow-[0_0_20px_rgba(34,211,238,0.2)]' 
-          : 'bg-volt-navy/40 border-white/5 hover:bg-volt-navy/60 hover:border-white/10'}
-        ${className}
-      `}
+      className={`relative p-6 rounded-2xl border transition-all duration-300 backdrop-blur-sm ${active ? 'bg-volt-navy/80 border-volt-cyan shadow-[0_0_20px_rgba(34,211,238,0.2)]' : 'bg-volt-navy/40 border-white/5 hover:bg-volt-navy/60 hover:border-white/10'} ${className}`}
     >
       {children}
     </div>
@@ -44,26 +37,17 @@ const Card = ({ children, className, onClick, active }) => {
 
 const Button = ({ children, onClick, variant = 'primary', className, icon: Icon, disabled = false }) => {
   const { registerInteraction } = useCognitive();
-
   const variants = {
     primary: "bg-gradient-to-r from-volt-cyan to-volt-green text-black font-bold shadow-[0_0_20px_rgba(34,211,238,0.4)]",
     danger: "bg-gradient-to-r from-red-800 to-red-600 text-white border border-red-500 shadow-[0_0_20px_rgba(239,68,68,0.4)]",
     secondary: "bg-volt-navy border border-white/20 text-white hover:bg-white/10",
     ghost: "bg-transparent text-volt-cyan hover:text-white"
   };
-
   return (
     <motion.button
       whileTap={!disabled ? { scale: 0.95 } : {}}
       whileHover={!disabled ? { scale: 1.02 } : {}}
-      onClick={
-        !disabled
-          ? (event) => {
-              registerInteraction();
-              if (onClick) onClick(event);
-            }
-          : undefined
-      }
+      onClick={!disabled ? (e) => { registerInteraction(); if (onClick) onClick(e); } : undefined}
       disabled={disabled}
       className={`w-full py-4 px-6 rounded-xl flex items-center justify-center gap-2 uppercase tracking-wider disabled:opacity-50 disabled:cursor-not-allowed ${variants[variant]} ${className}`}
     >
@@ -72,6 +56,41 @@ const Button = ({ children, onClick, variant = 'primary', className, icon: Icon,
     </motion.button>
   );
 };
+
+// --- ERROR BOUNDARY ---
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError(error) { return { hasError: true }; }
+  componentDidCatch(error, errorInfo) { console.error("Screen Error:", error, errorInfo); }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex flex-col items-center justify-center h-full p-8 text-center bg-red-950/20 border-2 border-red-600 rounded-2xl">
+          <AlertTriangle size={48} className="text-red-500 mb-4" />
+          <h2 className="text-2xl font-bold text-red-500 mb-2">Screen Failed to Load</h2>
+          <p className="text-slate-400 mb-6">We encountered an issue displaying this screen.</p>
+          <button
+            onClick={() => window.location.reload()}
+            className="bg-red-600 text-white px-6 py-3 rounded-lg font-bold"
+          >
+            Reload Application
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// --- LEGACY SCREENS REMOVED (Replaced by separate components) ---
+
+// reference to avoid unused-import linter in some environments
+const _motionRef = motion;
+
+// Remove duplicate UI components as they are now defined at the top
 
 // --- SCREENS ---
 
@@ -96,6 +115,7 @@ const Header = ({ voice }) => (
 
 // 1. HOME - WELCOME SCREEN WITH FIRST-TIME CHECK
 const HomeScreen = ({ onNext, decideUserMode, userMode }) => {
+  const navigate = useNavigate();
   const startRef = useRef(null);
   const { incrementHelp, registerInteraction } = useCognitive();
   const [voiceError, setVoiceError] = useState('');
@@ -106,23 +126,25 @@ const HomeScreen = ({ onNext, decideUserMode, userMode }) => {
   const [hasVoiceSupport, setHasVoiceSupport] = useState(false);
 
   const handleYes = () => {
-    // First time user → GUIDED mode
+    // First time user → Guided sequence
     decideUserMode && decideUserMode(true, 0);
+    localStorage.setItem('voltcharge-is-first-time', 'true');
     try { window.dispatchEvent(new CustomEvent('voltcharge-start', { detail: { time: Date.now() } })); } catch (e) { void e; }
-    onNext();
+    onNext(true);
   };
 
   const handleNo = () => {
-    // Check response time for mode detection
+    // Returning user
     const elapsed = Date.now() - (startRef.current || Date.now());
     decideUserMode && decideUserMode(false, elapsed);
+    localStorage.setItem('voltcharge-is-first-time', 'false');
     try { window.dispatchEvent(new CustomEvent('voltcharge-start', { detail: { time: Date.now() } })); } catch (e) { void e; }
-    onNext();
+    onNext(false);
   };
 
-  useEffect(() => { 
+  useEffect(() => {
     startRef.current = Date.now();
-    speak("Welcome to EV Charging Station. Is this your first time charging an EV?"); 
+    speak("Welcome to EV Charging Station. Is this your first time charging an EV?");
 
     // FIRST SCREEN VOICE RECOGNITION (safe, single instance)
     if (typeof window === 'undefined') {
@@ -239,7 +261,7 @@ const HomeScreen = ({ onNext, decideUserMode, userMode }) => {
             <Zap size={32} className="text-volt-cyan" />
           </div>
         </div>
-        <motion.h1 
+        <motion.h1
           initial={{ y: 20, opacity: 0 }} animate={{ y: 0, opacity: 1 }}
           className={`font-bold font-sans text-glow mb-2 ${userMode === 'ELDERLY' ? 'text-4xl' : (userMode === 'GUIDED' ? 'text-3xl' : 'text-2xl')}`}
         >
@@ -250,7 +272,7 @@ const HomeScreen = ({ onNext, decideUserMode, userMode }) => {
 
       {/* Main Question Section */}
       <div className="flex items-center justify-center flex-1 mb-12">
-        <motion.div 
+        <motion.div
           initial={{ scale: 0.95, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
           className="max-w-2xl text-center"
         >
@@ -262,7 +284,7 @@ const HomeScreen = ({ onNext, decideUserMode, userMode }) => {
               {voiceError}
             </p>
           )}
-          
+
           <div className={`grid grid-cols-2 gap-6 ${userMode === 'ELDERLY' ? 'gap-8' : ''}`}>
             <motion.button
               whileTap={{ scale: 0.95 }}
@@ -289,6 +311,7 @@ const HomeScreen = ({ onNext, decideUserMode, userMode }) => {
           onClick={() => {
             incrementHelp();
             registerInteraction();
+            navigate('/help');
           }}
         >
           ℹ️ Help
@@ -327,8 +350,8 @@ const ChargingModeScreen = ({ onFastCharge, onNormalCharge, userMode }) => {
     onNormalCharge();
   };
 
-  useEffect(() => { 
-    speak("Select your charging mode. Fast charge for quick charging or normal charge for balanced speed and battery health."); 
+  useEffect(() => {
+    speak("Select your charging mode. Fast charge for quick charging or normal charge for balanced speed and battery health.");
   }, []);
 
   const modeClasses = userMode === 'ELDERLY' ? 'text-2xl high-contrast' : (userMode === 'GUIDED' ? 'text-xl' : (userMode === 'EXPERT' ? 'text-sm compact-layout' : ''));
@@ -347,11 +370,11 @@ const ChargingModeScreen = ({ onFastCharge, onNormalCharge, userMode }) => {
           onClick={handleFastCharge}
           className="relative p-8 rounded-2xl border-2 cursor-pointer transition-all duration-300 backdrop-blur-sm bg-volt-navy/40 hover:bg-volt-navy/60 border-cyan-400 shadow-[0_0_30px_rgba(34,211,238,0.3)] hover:shadow-[0_0_50px_rgba(34,211,238,0.5)]">
           <div className="absolute w-8 h-8 border-2 rounded-full top-4 right-4 border-cyan-400 bg-cyan-400/10"></div>
-          
+
           <div className="mb-6 text-6xl">⚡</div>
           <h3 className="mb-2 text-3xl font-bold text-cyan-400">Fast Charge</h3>
           <p className="mb-6 text-lg text-slate-400">High-speed charging</p>
-          
+
           <div className="space-y-3 text-sm text-slate-300">
             <div className="flex items-center gap-2">
               <span className="font-bold text-cyan-400">⚡</span>
@@ -375,11 +398,11 @@ const ChargingModeScreen = ({ onFastCharge, onNormalCharge, userMode }) => {
           onClick={handleNormalCharge}
           className="relative p-8 rounded-2xl border-2 cursor-pointer transition-all duration-300 backdrop-blur-sm bg-volt-navy/40 hover:bg-volt-navy/60 border-green-500 shadow-[0_0_30px_rgba(16,185,129,0.3)] hover:shadow-[0_0_50px_rgba(16,185,129,0.5)]">
           <div className="absolute w-8 h-8 border-2 border-green-500 rounded-full top-4 right-4 bg-green-500/10"></div>
-          
+
           <div className="mb-6 text-6xl">🔋</div>
           <h3 className="mb-2 text-3xl font-bold text-green-500">Normal Charge</h3>
           <p className="mb-6 text-lg text-slate-400">Balanced charging mode</p>
-          
+
           <div className="space-y-3 text-sm text-slate-300">
             <div className="flex items-center gap-2">
               <span className="font-bold text-green-500">✓</span>
@@ -400,446 +423,10 @@ const ChargingModeScreen = ({ onFastCharge, onNormalCharge, userMode }) => {
   );
 };
 
-// 2. AUTHENTICATION
-const AuthScreen = ({ onNext, voice, userMode }) => {
-  const [phone, setPhone] = useState('');
-  const [error, setError] = useState('');
-  const [shake, setShake] = useState(false);
-  const [voiceModeActive, setVoiceModeActive] = useState(false);
-  const inputRef = useRef(null);
-  const { incrementError, registerInteraction } = useCognitive();
-
-  useEffect(() => { 
-    beep(500);
-    const stepText = userMode === 'GUIDED' ? 'Step 1: Identify Yourself. Tap your card or enter your phone number.' : 'Please identify yourself to continue.';
-    speak(stepText); 
-  }, [userMode]);
-
-  useEffect(() => {
-    const onFocus = () => inputRef.current && inputRef.current.focus();
-    const onClear = () => setPhone('');
-    window.addEventListener('voltcharge-focus-mobile', onFocus);
-    window.addEventListener('voltcharge-clear-mobile', onClear);
-    return () => { window.removeEventListener('voltcharge-focus-mobile', onFocus); window.removeEventListener('voltcharge-clear-mobile', onClear); };
-  }, []);
-
-  const validatePhone = (value) => {
-    if (!value || value.trim() === '') return false;
-    if (!/^\d{10}$/.test(value)) return false;
-    return true;
-  };
-
-  const handleAuth = () => {
-    if (!validatePhone(phone)) {
-      setError('Invalid phone number. Enter a valid 10-digit number.');
-      setShake(true);
-      speak('Invalid phone number.');
-      triggerHaptic([100, 50, 100]);
-      incrementError();
-      try { window.dispatchEvent(new Event('voltcharge-invalid-phone')); } catch (e) { void e; }
-      setTimeout(() => setShake(false), 700);
-      return;
-    }
-    setError('');
-    beep(300);
-    speak('OTP is being sent to your mobile number.');
-    triggerHaptic(50);
-    setTimeout(() => {
-      onNext(phone, 'normal');
-    }, 400);
-  };
-
-  const handleNfcTap = () => {
-    try {
-      triggerHaptic(50);
-      beep(400);
-      speak('Card recognized. Proceeding to charging setup.');
-      setTimeout(() => {
-      onNext(null, 'normal');
-      }, 300);
-    } catch (err) {
-      console.error('NFC tap error:', err);
-      setError('Could not process card. Please try again.');
-      triggerHaptic([100, 50, 100]);
-    incrementError();
-    }
-  };
-
-  const modeClasses = userMode === 'ELDERLY' ? 'text-2xl high-contrast' : (userMode === 'GUIDED' ? 'text-xl' : 'text-sm');
-  const titleSize = userMode === 'ELDERLY' ? 'text-4xl' : (userMode === 'GUIDED' ? 'text-3xl' : 'text-2xl');
-  const buttonSpacing = userMode === 'ELDERLY' ? 'gap-8' : (userMode === 'GUIDED' ? 'gap-6' : 'gap-4');
-  
-  return (
-    <div className={`flex flex-col h-full justify-center px-8 max-w-5xl mx-auto w-full ${modeClasses}`}>
-      <div className={`mb-8 ${userMode === 'GUIDED' ? 'flex items-center gap-2 mb-12' : ''}`}>
-        {userMode === 'GUIDED' && <span className="font-bold text-volt-cyan">Step 1 of 3</span>}
-        <h2 className={`${titleSize} font-bold font-sans text-glow`}>
-          {userMode === 'GUIDED' ? 'Identify Yourself' : 'Authentication'}
-        </h2>
-        <p className={`${userMode === 'ELDERLY' ? 'text-xl' : 'text-slate-400'}`}>
-          {userMode === 'ELDERLY' ? 'Use your card or phone number' : 'Please identify yourself to continue'}
-        </p>
-      </div>
-
-      <div className={`grid grid-cols-1 md:grid-cols-2 ${buttonSpacing} items-stretch ${userMode === 'ELDERLY' ? 'h-[500px]' : 'h-[400px]'}`}>
-        {/* Card 1: NFC */}
-        <Card onClick={handleNfcTap} className={`cursor-pointer group flex flex-col items-center justify-center hover:border-volt-cyan ${userMode === 'ELDERLY' ? 'p-12' : 'p-6'}`}>
-          <div className={`rounded-full bg-volt-dark border border-white/10 flex items-center justify-center mb-6 group-hover:scale-110 transition-transform ${userMode === 'ELDERLY' ? 'w-40 h-40' : 'w-32 h-32'}`}>
-            <Wifi size={userMode === 'ELDERLY' ? 64 : 48} className="text-volt-cyan" />
-          </div>
-          <h3 className={`${userMode === 'ELDERLY' ? 'text-2xl' : (userMode === 'GUIDED' ? 'text-lg' : 'text-base')} font-bold mb-2`}>Tap Card</h3>
-          <p className={`text-slate-500 ${userMode === 'ELDERLY' ? 'text-lg' : 'text-sm'}`}>NFC / RFID</p>
-        </Card>
-
-        {/* OR Divider */}
-        <div className="absolute z-10 flex-col items-center justify-center hidden -translate-x-1/2 -translate-y-1/2 md:flex left-1/2 top-1/2">
-          <div className={`${userMode === 'ELDERLY' ? 'h-20' : 'h-16'} w-[1px] bg-slate-700 mb-2`}></div>
-          <span className="px-2 font-mono text-xs bg-volt-dark text-slate-500">OR</span>
-          <div className={`${userMode === 'ELDERLY' ? 'h-20' : 'h-16'} w-[1px] bg-slate-700 mt-2`}></div>
-        </div>
-
-        {/* Card 2: Phone */}
-        <Card className={`flex flex-col justify-center ${userMode === 'ELDERLY' ? 'p-12' : 'p-6'}`}>
-          <div className="flex items-center gap-4 mb-6">
-            <div className={`bg-volt-green/10 rounded-lg ${userMode === 'ELDERLY' ? 'p-4' : 'p-3'}`}>
-              <Smartphone className="text-volt-green" size={userMode === 'ELDERLY' ? 32 : 24} />
-            </div>
-            <div>
-              <h3 className={`font-bold ${userMode === 'ELDERLY' ? 'text-xl' : 'text-lg'}`}>Mobile Number</h3>
-              <p className={`text-slate-500 ${userMode === 'ELDERLY' ? 'text-base' : 'text-xs'}`}>Enter 10 digits</p>
-            </div>
-          </div>
-          <motion.div animate={shake ? { x: [0, -10, 10, -6, 6, 0] } : { x: 0 }}>
-            <div className="flex gap-2">
-              <input 
-                ref={inputRef}
-                type="text" 
-                value={phone}
-                onChange={(e) => setPhone(e.target.value.replace(/[^0-9]/g, '').slice(0, 10))}
-                placeholder="9876543210" 
-                className={`flex-1 bg-black/40 rounded-lg outline-none ${error ? 'border border-red-500' : 'border border-white/10 focus:border-volt-cyan'} ${userMode === 'ELDERLY' ? 'p-6 text-2xl' : (userMode === 'GUIDED' ? 'p-4 text-lg' : 'p-4 text-base')}`}
-              />
-              <button
-                onClick={() => {
-                  if (!voice) return;
-                  if (voiceModeActive) {
-                    voice.stopListening();
-                    setVoiceModeActive(false);
-                    return;
-                  }
-                  setVoiceModeActive(true);
-                  voice.startListening('digits', (digits) => {
-                    if (digits) setPhone(prev => (prev + digits).slice(0, 10));
-                    setVoiceModeActive(false);
-                    voice.stopListening();
-                  });
-                }}
-                className={`px-3 py-2 rounded-lg ${voiceModeActive ? 'bg-volt-cyan text-black' : 'bg-volt-navy/60 text-white'} border border-white/10 ${userMode === 'ELDERLY' ? 'text-2xl' : ''}`}
-                title="Voice input for mobile number"
-              >
-                🎤
-              </button>
-            </div>
-          </motion.div>
-          {error && <div className="p-2 mb-2 text-xs text-red-400 rounded bg-red-950/30">{error}</div>}
-        </Card>
-      </div>
-
-      <Button onClick={handleAuth} variant="primary" className={`mt-8 w-full max-w-md mx-auto ${userMode === 'ELDERLY' ? 'py-6 text-2xl' : (userMode === 'GUIDED' ? 'py-5 text-lg' : '')}`}>
-        CONTINUE
-      </Button>
-    </div>
-  );
-};
+// --- DEPRECATED AUTH SCREEN REMOVED ---
 
 // 2.5 OTP VERIFICATION WITH REAL BACKEND
-const OTPScreen = ({ onNext, voice, userMode, mobile }) => {
-  const [otp, setOtp] = useState('');
-  const [error, setError] = useState('');
-  const [shake, setShake] = useState(false);
-  const [voiceModeActive, setVoiceModeActive] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const [otpSent, setOtpSent] = useState(false);
-  const [initializing, setInitializing] = useState(true);
-  const inputRef = useRef(null);
-  const sendAttemptRef = useRef(0);
-  const { incrementError, incrementHelp } = useCognitive();
-
-  // Clear error when user starts typing
-  useEffect(() => {
-    if (otp.length > 0) {
-      setError('');
-    }
-  }, [otp]);
-
-  useEffect(() => {
-    // Request OTP from backend
-    const sendOtp = async () => {
-      if (!mobile || sendAttemptRef.current > 0) return;
-      sendAttemptRef.current++;
-
-      setInitializing(true);
-      setError('');
-      try {
-        const response = await fetch('/api/send-otp', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mobile })
-        });
-
-        // Check for successful HTTP response
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: Failed to send OTP`);
-        }
-
-        const data = await response.json();
-        if (data.success) {
-          setOtpSent(true);
-          speak(`OTP sent to ${mobile}. Please enter the code.`);
-          triggerHaptic(50);
-        } else {
-          throw new Error(data.message || 'Backend rejected OTP request');
-        }
-      } catch (err) {
-        console.error('OTP send error:', err);
-        const errorMsg = err instanceof Error ? err.message : 'Network error';
-        setError(`Failed to send OTP: ${errorMsg}. Please try again.`);
-        incrementError();
-        speak('Failed to send OTP. Check your connection and try again.');
-        triggerHaptic([100, 50, 100]);
-      } finally {
-        setInitializing(false);
-      }
-    };
-    sendOtp();
-  }, [mobile]);
-
-  const handleVerifyOtp = async () => {
-    if (!otp || otp.length < 4) {
-      setError('Enter a valid OTP.');
-      speak('Enter a valid OTP.');
-      setShake(true);
-      setTimeout(() => setShake(false), 700);
-      incrementError();
-      return;
-    }
-
-    setIsLoading(true);
-    try {
-      const response = await fetch('/api/verify-otp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mobile, otp })
-      });
-      const data = await response.json();
-
-      if (data.success) {
-        setError('');
-        speak('OTP verified successfully. Proceeding to charging setup.');
-        triggerHaptic(50);
-        setTimeout(() => onNext(), 500);
-      } else {
-        setError(data.message || 'Invalid OTP. Try again.');
-        speak('Invalid OTP.');
-        setShake(true);
-        triggerHaptic([100, 50, 100]);
-        setTimeout(() => setShake(false), 700);
-        incrementError();
-      }
-    } catch (err) {
-      console.error('OTP verify error:', err);
-      setError('Network error. Please try again.');
-      speak('Network error.');
-      incrementError();
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const [timer, setTimer] = useState(30);
-  const [canResend, setCanResend] = useState(false);
-  const timerRef = useRef(null);
-
-  useEffect(() => {
-    if (!canResend) {
-      timerRef.current = setInterval(() => {
-        setTimer(prev => {
-          if (prev <= 1) {
-            setCanResend(true);
-            if (timerRef.current) clearInterval(timerRef.current);
-            return 0;
-          }
-          return prev - 1;
-        });
-      }, 1000);
-    }
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, [canResend]);
-
-  const handleResendOtp = async () => {
-    setCanResend(false);
-    setTimer(30);
-    setOtp('');
-    setError('');
-    setIsLoading(true);
-    try {
-      const response = await fetch('/api/send-otp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mobile })
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: Failed to resend OTP`);
-      }
-
-      const data = await response.json();
-      if (data.success) {
-        speak('OTP resent successfully.');
-        triggerHaptic(50);
-      } else {
-        throw new Error(data.message || 'Failed to resend OTP');
-      }
-    } catch (err) {
-      console.error('OTP resend error:', err);
-      const errorMsg = err instanceof Error ? err.message : 'Network error';
-      setError(`Resend failed: ${errorMsg}`);
-      speak('Failed to resend OTP. Please try again.');
-      triggerHaptic([100, 50, 100]);
-      incrementError();
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const modeClasses = userMode === 'ELDERLY' ? 'text-2xl high-contrast' : (userMode === 'GUIDED' ? 'text-xl' : 'text-sm');
-
-  // Show loading state while OTP is being sent
-  if (initializing) {
-    return (
-      <div className={`flex flex-col h-full items-center justify-center px-8 max-w-md mx-auto w-full ${modeClasses}`}>
-        <motion.div
-          animate={{ rotate: 360 }}
-          transition={{ duration: 2, repeat: Infinity }}
-          className="w-16 h-16 mb-6 border-4 rounded-full border-volt-cyan border-t-transparent"
-        />
-        <h2 className={`font-bold font-sans text-glow mb-2 ${userMode === 'ELDERLY' ? 'text-3xl' : (userMode === 'GUIDED' ? 'text-2xl' : 'text-xl')}`}>
-          Sending OTP...
-        </h2>
-        <p className={`${userMode === 'ELDERLY' ? 'text-lg' : 'text-base'} text-slate-400`}>
-          Please wait while we send the code to {mobile}
-        </p>
-      </div>
-    );
-  }
-
-  // Show error if OTP failed to send
-  if (!otpSent && error) {
-    return (
-      <div className={`flex flex-col h-full items-center justify-center px-8 max-w-md mx-auto w-full ${modeClasses}`}>
-        <motion.div
-          animate={{ rotate: [0, -5, 5, -5, 0] }}
-          transition={{ duration: 0.5, repeat: Infinity }}
-          className="flex items-center justify-center w-16 h-16 mb-6 border-2 border-red-600 rounded-full bg-red-950/50"
-        >
-          <AlertTriangle className="text-red-400" size={32} />
-        </motion.div>
-        <h2 className={`font-bold font-sans text-glow mb-2 text-red-400 ${userMode === 'ELDERLY' ? 'text-3xl' : (userMode === 'GUIDED' ? 'text-2xl' : 'text-xl')}`}>
-          Error Sending OTP
-        </h2>
-        <p className={`${userMode === 'ELDERLY' ? 'text-lg' : 'text-base'} text-slate-300 text-center mb-8`}>
-          {error}
-        </p>
-        <Button
-          onClick={() => {
-            setInitializing(true);
-            setError('');
-            sendAttemptRef.current = 0;
-          }}
-          variant="primary"
-          className={userMode === 'ELDERLY' ? 'py-6 text-2xl' : ''}
-        >
-          Try Again
-        </Button>
-      </div>
-    );
-  }
-
-  return (
-    <div className={`flex flex-col h-full justify-center px-8 max-w-md mx-auto w-full ${modeClasses}`}>
-      <div className="mb-12 text-center">
-        {userMode === 'GUIDED' && <span className="block mb-2 text-sm font-bold text-volt-cyan">Step 2 of 3</span>}
-        <h2 className={`font-bold font-sans text-glow mb-2 ${userMode === 'ELDERLY' ? 'text-3xl' : (userMode === 'GUIDED' ? 'text-2xl' : 'text-xl')}`}>Enter OTP</h2>
-        <p className={`${userMode === 'ELDERLY' ? 'text-lg' : (userMode === 'GUIDED' ? 'text-base' : 'text-sm')} text-slate-400`}>We sent a code to {mobile}</p>
-      </div>
-
-      <Card className="flex flex-col justify-center mb-8">
-        <motion.div animate={shake ? { x: [0, -10, 10, -6, 6, 0] } : { x: 0 }}>
-          <div className="flex gap-2 mb-2">
-            <input
-              ref={inputRef}
-              type="text"
-              value={otp}
-              onChange={(e) => setOtp(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
-              placeholder="000000"
-              disabled={isLoading}
-              className={`flex-1 bg-black/40 rounded-lg p-4 text-center ${userMode === 'ELDERLY' ? 'text-3xl' : (userMode === 'GUIDED' ? 'text-2xl' : 'text-xl')} tracking-widest font-bold outline-none ${error ? 'border border-red-500' : 'border border-white/10 focus:border-volt-cyan'}`}
-            />
-            <button
-              onClick={() => {
-                if (!voice) return;
-                if (voiceModeActive) {
-                  voice.stopListening();
-                  setVoiceModeActive(false);
-                  return;
-                }
-                setVoiceModeActive(true);
-                voice.startListening('digits', (digits) => {
-                  if (digits) setOtp(prev => (prev + digits).slice(0, 6));
-                  setVoiceModeActive(false);
-                  voice.stopListening();
-                });
-              }}
-              disabled={isLoading}
-              className={`px-3 py-2 rounded-lg ${voiceModeActive ? 'bg-volt-cyan text-black' : 'bg-volt-navy/60 text-white'} border border-white/10`}
-              title="Voice input for OTP"
-            >
-              🎤
-            </button>
-          </div>
-        </motion.div>
-        {error && <div className="p-3 mb-4 text-xs text-center text-red-400 rounded bg-red-950/30">{error}</div>}
-        <Button
-          onClick={handleVerifyOtp}
-          variant="primary"
-          disabled={isLoading || otp.length < 4}
-          className={`${userMode === 'ELDERLY' ? 'py-6 text-2xl' : (userMode === 'GUIDED' ? 'py-5 text-lg' : '')}`}
-        >
-          {isLoading ? (
-            <>
-              <motion.span animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity }} style={{ display: 'inline-block' }}>
-                ⏳
-              </motion.span>
-              {' Verifying...'}
-            </>
-          ) : 'VERIFY OTP'}
-        </Button>
-        <div className={`text-center mt-4 ${userMode === 'ELDERLY' ? 'text-lg' : 'text-sm'} text-slate-400`}>
-          {canResend ? (
-            <button
-              onClick={handleResendOtp}
-              className="font-semibold underline text-volt-cyan hover:text-volt-green"
-            >
-              Resend OTP
-            </button>
-          ) : (
-            <span>Resend OTP in <span className="font-bold text-volt-cyan">{timer}s</span></span>
-          )}
-        </div>
-      </Card>
-    </div>
-  );
-};
+// [OTP SCREEN REMOVED]
 
 // 3. CONNECT CABLE (OLD - KEPT FOR COMPATIBILITY)
 // [DEPRECATED - Use CableConnectionScreen instead]
@@ -855,7 +442,7 @@ const CableConnectionScreen = ({ onNext, userMode }) => {
   useEffect(() => {
     speak(userMode === 'GUIDED' ? 'Step 2 of 3: Connect your charging cable.' : 'Please connect your charging cable.');
     beep(500);
-    
+
     // Simulate cable detection after 2 seconds
     const timeout = setTimeout(() => {
       setChecking(false);
@@ -879,7 +466,7 @@ const CableConnectionScreen = ({ onNext, userMode }) => {
     setError('');
     setConnected(false);
     speak('Checking for cable connection...');
-    
+
     setTimeout(() => {
       setChecking(false);
       const detected = Math.random() > 0.2; // 80% success rate on retry
@@ -960,9 +547,9 @@ const CableConnectionScreen = ({ onNext, userMode }) => {
             Retry Detection
           </Button>
         )}
-        <Button 
-          onClick={handleContinue} 
-          variant="primary" 
+        <Button
+          onClick={handleContinue}
+          variant="primary"
           disabled={!connected}
           className={userMode === 'ELDERLY' ? 'py-6 text-2xl' : ''}
         >
@@ -974,7 +561,7 @@ const CableConnectionScreen = ({ onNext, userMode }) => {
 };
 
 // 4. CHARGING DASHBOARD
-const ChargingScreen = ({ onComplete, onError, mode = 'normal', userMode = 'STANDARD' }) => {
+const ChargingScreen = ({ onComplete, onError, mode = 'normal', userMode = 'STANDARD', isFirstTime }) => {
   const [progress, setProgress] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
   const [show80Modal, setShow80Modal] = useState(false);
@@ -1012,7 +599,7 @@ const ChargingScreen = ({ onComplete, onError, mode = 'normal', userMode = 'STAN
   const preBeepRef = useRef(false);
   const nearBeepRef = useRef(false);
 
-  
+
 
   const addHapticToastCb = useCallback((pattern) => {
     const id = Date.now();
@@ -1193,7 +780,7 @@ const ChargingScreen = ({ onComplete, onError, mode = 'normal', userMode = 'STAN
   };
 
   // keep pausedRef in sync with isPaused state
-  useEffect(()=>{ pausedRef.current = isPaused; }, [isPaused]);
+  useEffect(() => { pausedRef.current = isPaused; }, [isPaused]);
 
   useEffect(() => {
     // start charging
@@ -1351,13 +938,18 @@ const ChargingScreen = ({ onComplete, onError, mode = 'normal', userMode = 'STAN
 
   return (
     <div className="relative flex flex-col items-center justify-center w-full h-full max-w-4xl mx-auto">
-      
+      {/* Mock SMS Dashboard for First Time Users */}
+      {isFirstTime && (
+        <div className="fixed top-24 right-8 z-40 hidden xl:block">
+          <SmsDashboard batteryLevel={progress} />
+        </div>
+      )}
+
       {/* MODE INDICATOR - TOP */}
-      <div className={`absolute top-24 left-0 right-0 mx-auto w-fit px-6 py-2 rounded-full border-2 font-bold uppercase tracking-wider text-sm flex items-center gap-2 ${
-        mode === 'fast' 
-          ? 'border-cyan-400 bg-cyan-400/10 text-cyan-400 shadow-[0_0_20px_rgba(34,211,238,0.3)]' 
-          : 'border-green-500 bg-green-500/10 text-green-500 shadow-[0_0_20px_rgba(16,185,129,0.3)]'
-      }`}>
+      <div className={`absolute top-24 left-0 right-0 mx-auto w-fit px-6 py-2 rounded-full border-2 font-bold uppercase tracking-wider text-sm flex items-center gap-2 ${mode === 'fast'
+        ? 'border-cyan-400 bg-cyan-400/10 text-cyan-400 shadow-[0_0_20px_rgba(34,211,238,0.3)]'
+        : 'border-green-500 bg-green-500/10 text-green-500 shadow-[0_0_20px_rgba(16,185,129,0.3)]'
+        }`}>
         <Zap size={14} />
         {mode === 'fast' ? 'FAST CHARGE MODE' : 'NORMAL CHARGE MODE'}
         <span className={`ml-4 text-xs ${userMode === 'ELDERLY' ? 'text-white' : 'text-slate-400'}`}>Cognitive Mode: {cognitiveMetrics.cognitiveLoadLevel === 'HIGH' ? 'SIMPLE' : (cognitiveMetrics.cognitiveLoadLevel === 'LOW' ? 'ADVANCED' : 'NORMAL')}</span>
@@ -1366,7 +958,7 @@ const ChargingScreen = ({ onComplete, onError, mode = 'normal', userMode = 'STAN
       {/* EMERGENCY STOP CONFIRMATION */}
       <AnimatePresence>
         {showEmergencyConfirm && (
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md"
           >
@@ -1386,17 +978,17 @@ const ChargingScreen = ({ onComplete, onError, mode = 'normal', userMode = 'STAN
       {showAdminPanel && (
         <div className="fixed w-64 p-4 text-sm border rounded-lg top-20 right-8 z-60 bg-volt-navy/90 border-white/10">
           <div className="mb-2 font-bold">Research Metrics</div>
-          <div className="mb-2 text-xs text-slate-400">Total task time: <span className="float-right font-mono">{startTime ? Math.floor((nowTick - startTime)/1000) : 0}s</span></div>
+          <div className="mb-2 text-xs text-slate-400">Total task time: <span className="float-right font-mono">{startTime ? Math.floor((nowTick - startTime) / 1000) : 0}s</span></div>
           <div className="mb-2 text-xs text-slate-400">Errors: <span className="float-right font-mono">{errorCount}</span></div>
           <div className="mb-2 text-xs text-slate-400">Interactions: <span className="float-right font-mono">{interactionCount}</span></div>
           <div className="text-xs text-slate-400">Final Cognitive Load: <span className="float-right font-mono">{cognitiveMetrics.cognitiveLoadLevel}</span></div>
         </div>
       )}
-      
+
       {/* 80% Modal Overlay */}
       <AnimatePresence>
         {show80Modal && (
-          <motion.div 
+          <motion.div
             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
             className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md"
           >
@@ -1416,10 +1008,10 @@ const ChargingScreen = ({ onComplete, onError, mode = 'normal', userMode = 'STAN
       <div className={`relative flex items-center justify-center ${userMode === 'ELDERLY' ? 'w-96 h-96 mb-12' : (userMode === 'EXPERT' ? 'w-72 h-72 mb-6' : 'w-80 h-80 mb-8')}`}>
         <svg className="w-full h-full -rotate-90">
           <circle cx={userMode === 'ELDERLY' ? 192 : (userMode === 'EXPERT' ? 144 : 160)} cy={userMode === 'ELDERLY' ? 192 : (userMode === 'EXPERT' ? 144 : 160)} r={userMode === 'ELDERLY' ? 160 : (userMode === 'EXPERT' ? 120 : 140)} stroke="#0f172a" strokeWidth="12" fill="none" />
-          <circle 
-            cx={userMode === 'ELDERLY' ? 192 : (userMode === 'EXPERT' ? 144 : 160)} 
-            cy={userMode === 'ELDERLY' ? 192 : (userMode === 'EXPERT' ? 144 : 160)} 
-            r={userMode === 'ELDERLY' ? 160 : (userMode === 'EXPERT' ? 120 : 140)} 
+          <circle
+            cx={userMode === 'ELDERLY' ? 192 : (userMode === 'EXPERT' ? 144 : 160)}
+            cy={userMode === 'ELDERLY' ? 192 : (userMode === 'EXPERT' ? 144 : 160)}
+            r={userMode === 'ELDERLY' ? 160 : (userMode === 'EXPERT' ? 120 : 140)}
             stroke="#22d3ee" strokeWidth="12" fill="none"
             strokeDasharray={userMode === 'ELDERLY' ? 1005 : (userMode === 'EXPERT' ? 753.98 : 879.6)}
             strokeDashoffset={userMode === 'ELDERLY' ? 1005 - (1005 * progress) / 100 : (userMode === 'EXPERT' ? 753.98 - (753.98 * progress) / 100 : 879.6 - (879.6 * progress) / 100)}
@@ -1437,7 +1029,7 @@ const ChargingScreen = ({ onComplete, onError, mode = 'normal', userMode = 'STAN
 
       {userMode !== 'EXPERT' && (
         <div className={`bg-volt-navy/50 px-4 py-2 rounded-full border border-white/5 mb-8 flex items-center gap-2 ${userMode === 'ELDERLY' ? 'px-6 py-3' : ''}`}>
-          <motion.div 
+          <motion.div
             animate={hapticTriggered ? { scale: [1, 1.3, 0.9, 1.2, 1] } : { scale: 1 }}
             transition={{ duration: 0.3 }}
             className={`w-3 h-3 rounded-full shadow-[0_0_10px_rgba(34,211,238,0.6)] ${hapticTriggered ? 'bg-red-500 shadow-[0_0_15px_rgba(239,68,68,0.8)]' : 'bg-volt-cyan'}`}
@@ -1483,15 +1075,14 @@ const ChargingScreen = ({ onComplete, onError, mode = 'normal', userMode = 'STAN
       {/* SAFETY FEATURES PANEL */}
       <div className="w-full max-w-3xl p-6 mb-8 border bg-volt-navy/40 border-white/5 rounded-2xl">
         <h3 className="mb-4 text-sm font-bold tracking-widest uppercase text-slate-300">Safety Features</h3>
-        
+
         <div className="grid grid-cols-1 gap-4 mb-6 md:grid-cols-2">
           {/* Over Voltage Warning Card */}
-          <motion.div 
-            className={`p-4 rounded-lg border-2 transition-all ${
-              overVoltageWarning
-                ? 'border-red-600 bg-red-950/30 shadow-[0_0_20px_rgba(220,38,38,0.3)]'
-                : 'border-green-600 bg-green-950/20'
-            }`}>
+          <motion.div
+            className={`p-4 rounded-lg border-2 transition-all ${overVoltageWarning
+              ? 'border-red-600 bg-red-950/30 shadow-[0_0_20px_rgba(220,38,38,0.3)]'
+              : 'border-green-600 bg-green-950/20'
+              }`}>
             <div className="flex items-center justify-between mb-2">
               <span className="text-sm font-bold">{overVoltageWarning ? '⚠️ Over Voltage' : '✓ Voltage Safe'}</span>
               <span className={`text-xs font-mono ${overVoltageWarning ? 'text-red-400' : 'text-green-400'}`}>
@@ -1522,11 +1113,10 @@ const ChargingScreen = ({ onComplete, onError, mode = 'normal', userMode = 'STAN
             <motion.button
               whileTap={{ scale: 0.95 }}
               onClick={toggleChildLock}
-              className={`w-full py-2 px-3 rounded-lg font-bold text-xs uppercase transition-all ${
-                childLockEnabled
-                  ? 'bg-yellow-900/40 border border-yellow-600 text-yellow-400'
-                  : 'bg-slate-700/40 border border-white/10 text-slate-300 hover:bg-slate-700/60'
-              }`}
+              className={`w-full py-2 px-3 rounded-lg font-bold text-xs uppercase transition-all ${childLockEnabled
+                ? 'bg-yellow-900/40 border border-yellow-600 text-yellow-400'
+                : 'bg-slate-700/40 border border-white/10 text-slate-300 hover:bg-slate-700/60'
+                }`}
             >
               {childLockEnabled ? '🔒 UNLOCK' : '🔓 LOCK'}
             </motion.button>
@@ -1539,11 +1129,10 @@ const ChargingScreen = ({ onComplete, onError, mode = 'normal', userMode = 'STAN
           whileTap={!childLockEnabled ? { scale: 0.98 } : {}}
           onClick={handleEmergencyStop}
           disabled={childLockEnabled}
-          className={`w-full ${cognitiveMetrics.cognitiveLoadLevel === 'HIGH' ? 'py-6 text-2xl' : 'py-4'} rounded-xl font-bold text-white uppercase tracking-wider transition-all ${
-            childLockEnabled
-              ? 'bg-slate-700/30 border-2 border-slate-600 cursor-not-allowed opacity-50'
-              : 'bg-gradient-to-r from-red-800 to-red-600 border-2 border-red-500 shadow-[0_0_20px_rgba(220,38,38,0.4)] hover:shadow-[0_0_30px_rgba(220,38,38,0.6)]'
-          }`}
+          className={`w-full ${cognitiveMetrics.cognitiveLoadLevel === 'HIGH' ? 'py-6 text-2xl' : 'py-4'} rounded-xl font-bold text-white uppercase tracking-wider transition-all ${childLockEnabled
+            ? 'bg-slate-700/30 border-2 border-slate-600 cursor-not-allowed opacity-50'
+            : 'bg-gradient-to-r from-red-800 to-red-600 border-2 border-red-500 shadow-[0_0_20px_rgba(220,38,38,0.4)] hover:shadow-[0_0_30px_rgba(220,38,38,0.6)]'
+            }`}
         >
           🛑 Emergency Stop
         </motion.button>
@@ -1829,9 +1418,9 @@ const PaymentErrorScreen = ({ onRetry, onHome }) => {
 
 // 5.5 CHARGING INTERRUPTED
 const ChargingErrorScreen = ({ onRetry, onHome }) => {
-  useEffect(() => { 
+  useEffect(() => {
     triggerHaptic([100, 50, 100, 50, 200]);
-    speak("Charging interrupted. Power disconnected."); 
+    speak("Charging interrupted. Power disconnected.");
     beep(500);
   }, []);
 
@@ -1913,18 +1502,18 @@ const PaymentScreen = ({ onHome, userMode }) => {
   const titleSize = userMode === 'ELDERLY' ? 'text-5xl' : (userMode === 'GUIDED' ? 'text-4xl' : 'text-3xl');
   const textSize = userMode === 'ELDERLY' ? 'text-2xl' : (userMode === 'GUIDED' ? 'text-lg' : 'text-base');
   const spacing = userMode === 'ELDERLY' ? 'gap-8' : (userMode === 'GUIDED' ? 'gap-6' : 'gap-4');
-  
+
   return (
     <div className={`flex flex-col h-full items-center justify-center max-w-2xl mx-auto w-full text-center ${spacing}`}>
-      <motion.div 
-        initial={{ scale: 0 }} 
-        animate={{ scale: 1 }} 
+      <motion.div
+        initial={{ scale: 0 }}
+        animate={{ scale: 1 }}
         transition={{ type: 'spring', stiffness: 80 }}
         className={`rounded-full bg-volt-green/20 border border-volt-green flex items-center justify-center shadow-[0_0_30px_rgba(16,185,129,0.3)] ${userMode === 'ELDERLY' ? 'w-40 h-40' : (userMode === 'GUIDED' ? 'w-32 h-32' : 'w-24 h-24')}`}
       >
         <CheckCircle2 size={userMode === 'ELDERLY' ? 80 : (userMode === 'GUIDED' ? 60 : 48)} className="text-volt-green" />
       </motion.div>
-      
+
       <div>
         <h2 className={`${titleSize} font-bold mb-2`}>
           {userMode === 'GUIDED' ? 'Charging Complete!' : 'Charging Completed'}
@@ -1948,22 +1537,22 @@ const PaymentScreen = ({ onHome, userMode }) => {
       </Card>
 
       <div className={`flex gap-4 w-full max-w-md flex-col md:flex-row ${userMode === 'ELDERLY' ? 'gap-6' : ''}`}>
-        <Button 
-          onClick={downloadReceipt} 
-          variant="primary" 
+        <Button
+          onClick={downloadReceipt}
+          variant="primary"
           className={`flex-1 ${userMode === 'ELDERLY' ? 'py-6 text-xl' : (userMode === 'GUIDED' ? 'py-5 text-lg' : '')}`}
         >
           {userMode === 'ELDERLY' ? '📄 RECEIPT' : 'Download Receipt'}
         </Button>
-        <Button 
-          onClick={onHome} 
-          variant="secondary" 
+        <Button
+          onClick={onHome}
+          variant="secondary"
           className={`flex-1 ${userMode === 'ELDERLY' ? 'py-6 text-xl' : (userMode === 'GUIDED' ? 'py-5 text-lg' : '')}`}
         >
           {userMode === 'ELDERLY' ? '🏠 HOME' : 'Return Home'}
         </Button>
       </div>
-      
+
       {userMode !== 'EXPERT' && (
         <div className={`mt-8 w-full max-w-md`}>
           <Card className={userMode === 'ELDERLY' ? 'p-8' : (userMode === 'GUIDED' ? 'p-6' : 'p-4')}>
@@ -1971,7 +1560,7 @@ const PaymentScreen = ({ onHome, userMode }) => {
             <div className={`space-y-3 ${userMode === 'ELDERLY' ? 'text-xl' : (userMode === 'GUIDED' ? 'text-base' : 'text-sm')}`}>
               <div className="flex justify-between text-slate-400">
                 <span>Time Taken</span>
-                <span className="font-mono font-bold text-white">{sessionSummary?.totalTime ? `${Math.floor(sessionSummary.totalTime/1000)}s` : '--'}</span>
+                <span className="font-mono font-bold text-white">{sessionSummary?.totalTime ? `${Math.floor(sessionSummary.totalTime / 1000)}s` : '--'}</span>
               </div>
               <div className="flex justify-between text-slate-400">
                 <span>Actions</span>
@@ -2038,12 +1627,21 @@ const HistoryScreen = ({ onBack, userMode }) => {
 // --- MAIN APP ---
 
 export default function App() {
-  const [screen, setScreen] = useState('home');
+  const navigate = useNavigate();
+  const location = useLocation();
   const [chargingMode, setChargingMode] = useState('normal');
   const [userMode, setUserMode] = useState('STANDARD'); // STANDARD | GUIDED | ELDERLY | EXPERT
   const [mobileNumber, setMobileNumber] = useState('');
+  const [isFirstTime, setIsFirstTime] = useState(false);
   const voice = useVoiceCommands();
   const prevScreenRef = useRef(null);
+
+  useEffect(() => {
+    const saved = localStorage.getItem('voltcharge-is-first-time');
+    if (saved !== null) {
+      setIsFirstTime(saved === 'true');
+    }
+  }, []);
 
   const decideUserMode = (firstTime, interactionTime) => {
     // silent background decision
@@ -2064,16 +1662,15 @@ export default function App() {
       const text = (e && e.detail || '').toString().toLowerCase();
       if (!text) return;
       if (text.includes('start charging')) {
-        // go to mode select / start flow
-        setScreen(prev => (prev === 'home' ? 'mode-select' : prev));
+        if (location.pathname === '/') navigate('/mode-select');
       } else if (text.includes('stop charging')) {
         try { window.dispatchEvent(new CustomEvent('voltcharge-voice-action', { detail: 'stop_charging' })); } catch (err) { void err; }
       } else if (text.includes('go back')) {
-        setScreen(prevScreenRef.current || 'home');
+        navigate(-1);
       } else if (text.includes('confirm')) {
         try { window.dispatchEvent(new CustomEvent('voltcharge-voice-action', { detail: 'confirm' })); } catch (err) { void err; }
       } else if (text.includes('enter mobile')) {
-        setScreen('auth');
+        navigate('/authentication');
         try { window.dispatchEvent(new CustomEvent('voltcharge-focus-mobile')); } catch (err) { void err; }
       } else if (text.includes('clear')) {
         try { window.dispatchEvent(new CustomEvent('voltcharge-clear-mobile')); } catch (err) { void err; }
@@ -2083,54 +1680,93 @@ export default function App() {
     return () => window.removeEventListener('voltcharge-voice-cmd', onVoiceCmd);
   }, []);
 
-  const renderScreen = () => {
-    switch(screen) {
-      case 'home': return (
-        <HomeScreen 
-          onNext={() => setScreen('auth')} 
-          onHistory={() => setScreen('history')}
-          decideUserMode={decideUserMode}
-          voice={voice}
-          userMode={userMode}
-        />
-      );
-      case 'mode-select': return (
-      <ChargingModeScreen 
-        onFastCharge={() => { setChargingMode('fast'); setScreen('auth'); }}
-        onNormalCharge={() => { setChargingMode('normal'); setScreen('auth'); }}
-        userMode={userMode}
-        />
-      );
-      case 'auth': return <AuthScreen onNext={(mobile, mode) => { setMobileNumber(mobile); setChargingMode(mode || 'normal'); setScreen(mobile ? 'otp' : 'cable-connect'); }} voice={voice} userMode={userMode} />;
-      case 'otp': return <OTPScreen onNext={() => setScreen('cable-connect')} voice={voice} userMode={userMode} mobile={mobileNumber} />;
-      case 'cable-connect': return <CableConnectionScreen onNext={() => setScreen('charging')} userMode={userMode} />;
-      case 'charging': return <ChargingScreen mode={chargingMode} onComplete={() => setScreen('payment')} onError={() => { prevScreenRef.current = 'charging'; setScreen('charging-error'); }} voice={voice} userMode={userMode} />;
-      case 'error': return <ErrorScreen onRetry={() => setScreen('connect')} onHome={() => setScreen('home')} />;
-      case 'network-error': return <NetworkErrorScreen onRetry={() => setScreen('connect')} onHome={() => setScreen('home')} />;
-      case 'overheat-error': return <OverheatErrorScreen onRetry={() => setScreen('charging')} onHome={() => setScreen('home')} />;
-      case 'payment-error': return <PaymentErrorScreen onRetry={() => setScreen('auth')} onHome={() => setScreen('home')} />;
-      case 'charging-error': return <ChargingErrorScreen onRetry={() => setScreen('charging')} onHome={() => setScreen('home')} />;
-      case 'payment': return <PaymentScreen onHome={() => setScreen('home')} userMode={userMode} />;
-      case 'history': return <HistoryScreen onBack={() => setScreen('home')} userMode={userMode} />;
-      default: return <HomeScreen onNext={() => setScreen('auth')} onHistory={() => setScreen('history')} decideUserMode={decideUserMode} voice={voice} userMode={userMode} />;
-    }
-  };
+  // --- RENDER LOGIC MOVED TO JSX ROUTES ---
 
   return (
     <div className="flex flex-col min-h-screen font-sans text-white bg-hexagon">
       <Header voice={voice} />
       <div className="flex-1 px-4 pt-20 pb-8 overflow-x-hidden overflow-y-auto">
         <AnimatePresence mode="wait">
-          <motion.div
-            key={screen}
-            initial={{ opacity: 0, x: 20 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -20 }}
-            transition={{ duration: 0.3 }}
-            className="h-full"
-          >
-            {renderScreen()}
-          </motion.div>
+          <ErrorBoundary>
+            <motion.div
+              key={location.pathname}
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              transition={{ duration: 0.3 }}
+              className="h-full"
+            >
+              <Routes location={location}>
+                <Route path="/" element={
+                  <HomeScreen
+                    onNext={(isFirst) => {
+                      setIsFirstTime(isFirst);
+                      navigate(isFirst ? '/first-time-tutorial' : '/authentication');
+                    }}
+                    onHistory={() => navigate('/history')}
+                    decideUserMode={decideUserMode}
+                    voice={voice}
+                    userMode={userMode}
+                  />
+                } />
+
+                <Route path="/first-time-tutorial" element={<FirstTimeTutorial />} />
+                <Route path="/help" element={<ErrorDashboard />} />
+
+                <Route path="/first-time-authentication" element={
+                  <FirstTimeNFCAuth
+                    onNext={() => navigate('/cable-connect')}
+                  />
+                } />
+
+                <Route path="/authentication" element={
+                  <MainAuthentication
+                    onNext={(mobile) => {
+                      setMobileNumber(mobile);
+                      navigate('/cable-connect');
+                    }}
+                  />
+                } />
+
+                <Route path="/mode-select" element={
+                  <ChargingModeScreen
+                    onFastCharge={() => { setChargingMode('fast'); navigate('/authentication'); }}
+                    onNormalCharge={() => { setChargingMode('normal'); navigate('/authentication'); }}
+                    userMode={userMode}
+                  />
+                } />
+
+                <Route path="/cable-connect" element={
+                  <CableConnectionScreen
+                    onNext={() => navigate('/charging')}
+                    userMode={userMode}
+                  />
+                } />
+
+                <Route path="/charging" element={
+                  <ChargingScreen
+                    mode={chargingMode}
+                    onComplete={() => navigate('/payment')}
+                    onError={() => { prevScreenRef.current = '/charging'; navigate('/charging-error'); }}
+                    voice={voice}
+                    userMode={userMode}
+                    isFirstTime={isFirstTime}
+                  />
+                } />
+
+                <Route path="/payment" element={<PaymentScreen onHome={() => navigate('/')} userMode={userMode} />} />
+                <Route path="/history" element={<HistoryScreen onBack={() => navigate('/')} userMode={userMode} />} />
+
+                {/* Error Screens */}
+                <Route path="/charging-error" element={<ChargingErrorScreen onRetry={() => navigate('/charging')} onHome={() => navigate('/')} />} />
+                <Route path="/overheat-error" element={<OverheatErrorScreen onRetry={() => navigate('/charging')} onHome={() => navigate('/')} />} />
+                <Route path="/payment-error" element={<PaymentErrorScreen onRetry={() => navigate('/authentication')} onHome={() => navigate('/')} />} />
+                <Route path="/network-error" element={<NetworkErrorScreen onRetry={() => navigate(-1)} onHome={() => navigate('/')} />} />
+
+                <Route path="*" element={<Navigate to="/" replace />} />
+              </Routes>
+            </motion.div>
+          </ErrorBoundary>
         </AnimatePresence>
       </div>
     </div>
