@@ -242,6 +242,8 @@ npm run dev
    ```
 3. **Static Serving**: Deploy the `dist/` folder via Vercel, Netlify, or Nginx.
 
+https://cognative-ev-station-hmi.vercel.app/
+
 ---
 
 ## 15. GitHub Push Steps
